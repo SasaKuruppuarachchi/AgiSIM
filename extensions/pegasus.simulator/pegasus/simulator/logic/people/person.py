@@ -50,8 +50,23 @@ class Person:
     # Resolved lazily on first Person instantiation (not at module import time)
     assets_root_path = None
 
+    @classmethod
+    def _ensure_assets_root_path(cls):
+        """Resolve assets_root_path on first call. Called from __init__ and static helpers."""
+        if cls.assets_root_path is not None:
+            return
+        if cls.people_asset_folder:
+            cls.assets_root_path = cls.people_asset_folder
+        else:
+            try:
+                root_path = get_assets_root_path()
+                if root_path:
+                    cls.assets_root_path = f"{root_path}/Isaac/People/Characters"
+            except Exception as e:
+                carb.log_error(f"Could not resolve Isaac Sim asset root path: {e}")
+
     def __init__(
-        self, 
+        self,
         stage_prefix: str,
         character_name: str = None,
         init_pos=[0.0, 0.0, 0.0],
@@ -72,17 +87,8 @@ class Person:
         # Get the current stage
         self._current_stage = omni.usd.get_context().get_stage()
 
-        # Resolve assets root path lazily (carb settings are available by the time __init__ runs)
-        if Person.assets_root_path is None:
-            if Person.people_asset_folder:
-                Person.assets_root_path = Person.people_asset_folder
-            else:
-                try:
-                    root_path = get_assets_root_path()
-                    if root_path:
-                        Person.assets_root_path = f"{root_path}/Isaac/People/Characters"
-                except Exception as e:
-                    carb.log_error(f"Could not resolve Isaac Sim asset root path: {e}")
+        # Ensure the assets root path is resolved before first use
+        Person._ensure_assets_root_path()
 
         # Variable that will hold the current state of the vehicle
         self._state = State()
@@ -341,6 +347,7 @@ class Person:
 
     @staticmethod
     def get_character_asset_list():
+        Person._ensure_assets_root_path()
         # List all files in characters directory
         result, folder_list = omni.client.list("{}/".format(Person.assets_root_path))
 
