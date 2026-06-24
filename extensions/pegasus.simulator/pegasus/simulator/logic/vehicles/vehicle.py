@@ -331,6 +331,11 @@ class Vehicle:
         linear_vel = linear_vels.numpy()[0]   # [vx, vy, vz] in world frame
         ang_vel_world = angular_vels.numpy()[0]  # [wx, wy, wz] in world frame, rad/s
 
+        # Convert warp float32 outputs to float64 so ROS 2 message fields pass PyFloat_Check
+        pos = pos.astype(np.float64)
+        linear_vel = linear_vel.astype(np.float64)
+        ang_vel_world = ang_vel_world.astype(np.float64)
+
         # Get the linear acceleration of the body relative to the inertial frame, expressed in the inertial frame
         linear_acceleration = (linear_vel - self._state.linear_velocity) / dt if dt > 0.0 else np.zeros(3)
 
