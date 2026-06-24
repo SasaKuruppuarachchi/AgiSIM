@@ -119,7 +119,6 @@ class PegasusApp:
         mavlink_config = PX4MavlinkBackendConfig({
             "vehicle_id": 0,
             "px4_autolaunch": True,
-            "px4_dir": "/home/marcelo/PX4-Autopilot"     # TODO -> Change this line to the path where you have the PX4-Autopilot code downloaded (this is an example on how you can set your own path for PX4)
         })
 
         config_multirotor.backends = [
