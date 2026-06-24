@@ -15,11 +15,12 @@ from pxr import Sdf
 # High level Isaac sim APIs
 import NavSchema
 import omni.client
-from isaacsim.core.utils import prims
+import omni.usd
 from omni.usd import get_stage_next_free_path
 from isaacsim.storage.native import get_assets_root_path
-
-from omni.isaac.core import SimulationContext
+import isaacsim.core.experimental.utils.app as app_utils
+import isaacsim.core.experimental.utils.stage as stage_utils
+from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 # New imports from the replicator API
 import omni.anim.graph.core as ag
@@ -40,7 +41,7 @@ class Person:
     """
 
     # Get root assets path from setting, if not set, get the Isaac-Sim asset path
-    people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/People/Characters/"
+    people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters/"
     character_root_prim_path = PrimPaths.characters_parent_path()
 
     assets_root_path = None   
@@ -71,9 +72,8 @@ class Person:
             controller (PersonController): A controller to add some custom behaviour to the movement of the person. Defaults to None.
         """
 
-        # Get the current world at which we want to spawn the vehicle
-        self._world = PegasusInterface().world
-        self._current_stage = self._world.stage
+        # Get the current stage
+        self._current_stage = omni.usd.get_context().get_stage()
 
         # Variable that will hold the current state of the vehicle
         self._state = State()
@@ -119,18 +119,23 @@ class Person:
         if self._backend:
             self._backend.initialize(self)
 
-        # Add a callback to the physics engine to update the current state of the person
-        self._world.add_physics_callback(self._stage_prefix + "/state", self.update_state)
-
-        # Add the update method to the physics callback if the world was received
-        # so that we can apply the new references to be tracked by the person
-        self._world.add_physics_callback(self._stage_prefix + "/update", self.update)
+        # Register physics callbacks with SimulationManager
+        self._cb_state = SimulationManager.register_callback(self.update_state, SimulationEvent.PHYSICS_POST_STEP)
+        self._cb_update = SimulationManager.register_callback(self.update, SimulationEvent.PHYSICS_POST_STEP)
 
         # Set the flag that signals if the simulation is running or not
         self._sim_running = False
 
-        # Add a callback to start/stop of the simulation once the play/stop button is hit
-        self._world.add_timeline_callback(self._stage_prefix + "/start_stop_sim", self.sim_start_stop)
+        # Register simulation start/stop callbacks
+        self._cb_sim_start = SimulationManager.register_callback(self._on_sim_started, SimulationEvent.SIMULATION_STARTED)
+        self._cb_sim_stop = SimulationManager.register_callback(self._on_sim_stopped, SimulationEvent.SIMULATION_STOPPED)
+
+    def __del__(self):
+        for cb_id in (self._cb_state, self._cb_update, self._cb_sim_start, self._cb_sim_stop):
+            try:
+                SimulationManager.deregister_callback(cb_id)
+            except Exception:
+                pass
 
     @property
     def state(self):
@@ -141,20 +146,15 @@ class Person:
         """
         return self._state
     
-    def sim_start_stop(self, event):
-        """
-        Callback that is called every time there is a timeline event such as starting/stoping the simulation.
-
-        Args:
-            event: A timeline event generated from Isaac Sim, such as starting or stoping the simulation.
-        """
-
-        # If the start/stop button was pressed, then call the start and stop methods accordingly
-        if self._world.is_playing() and self._sim_running == False:
+    def _on_sim_started(self, *args):
+        """Callback invoked when the simulation starts."""
+        if not self._sim_running:
             self._sim_running = True
             self.start()
 
-        if self._world.is_stopped() and self._sim_running == True:
+    def _on_sim_stopped(self, *args):
+        """Callback invoked when the simulation stops."""
+        if self._sim_running:
             self._sim_running = False
             self.stop()
 
@@ -172,7 +172,7 @@ class Person:
         if self._controller:
             self._controller.stop()
 
-    def update(self, dt: float):
+    def update(self, dt: float, context=None):
         """
         Method that implements the logic to make the person move around in the simulation world and also play the animation
 
@@ -220,7 +220,7 @@ class Person:
         self._target_speed = walk_speed
 
 
-    def update_state(self, dt: float):
+    def update_state(self, dt: float, context=None):
         """
         Method that is called at every physics step to retrieve and update the current state of the person, i.e., get
         the current position, orientation, linear and angular velocities and acceleration of the person.
@@ -280,7 +280,11 @@ class Person:
 
         # If the base biped character is not present in the stage, spawn it
         if not self._current_stage.GetPrimAtPath(Person.character_root_prim_path + "/Biped_Setup"):
-            prim = prims.create_prim(Person.character_root_prim_path + "/Biped_Setup", "Xform", usd_path=Person.assets_root_path + "/Biped_Setup.usd")
+            stage_utils.add_reference_to_stage(
+                usd_path=Person.assets_root_path + "/Biped_Setup.usd",
+                path=Person.character_root_prim_path + "/Biped_Setup",
+            )
+            prim = self._current_stage.GetPrimAtPath(Person.character_root_prim_path + "/Biped_Setup")
             prim.GetAttribute("visibility").Set("invisible")
 
 
