@@ -40,7 +40,7 @@ class Person:
     """
 
     # Get root assets path from setting, if not set, get the Isaac-Sim asset path
-    people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters/"
+    people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters"
     # Default parent path for character prims (matches isaacsim.replicator.agent.core config default)
     character_root_prim_path = "/World/Characters"
 
