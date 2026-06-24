@@ -23,6 +23,9 @@ import isaacsim.core.experimental.utils.stage as stage_utils
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 # New imports from the replicator API
+# omni.anim.graph.core is in extscache in Isaac Sim 6.0 and must be enabled before import
+from isaacsim.core.experimental.utils.app import enable_extension
+enable_extension("omni.anim.graph.core")
 import omni.anim.graph.core as ag
 import isaacsim.replicator.agent.core
 from isaacsim.replicator.agent.core.settings import PrimPaths
