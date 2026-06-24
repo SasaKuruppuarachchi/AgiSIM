@@ -39,19 +39,16 @@ class Person:
     Class that implements a person in the simulation world. The person can be controlled by a controller that inherits from the PersonController class.
     """
 
-    # Get root assets path from setting, if not set, get the Isaac-Sim asset path
-    people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters"
+    # Can be set by users to override the default NVIDIA asset server URL.
+    # When None, the path is resolved at runtime via get_assets_root_path() so
+    # the correct Nucleus/S3 URL for this Isaac Sim installation is used.
+    people_asset_folder = None
+
     # Default parent path for character prims (matches isaacsim.replicator.agent.core config default)
     character_root_prim_path = "/World/Characters"
 
-    assets_root_path = None   
-
-    if people_asset_folder:
-        assets_root_path = people_asset_folder
-    else:   
-        root_path = get_assets_root_path()
-        if root_path is not None:
-            assets_root_path  = "{}/Isaac/People/Characters".format(root_path)
+    # Resolved lazily on first Person instantiation (not at module import time)
+    assets_root_path = None
 
     def __init__(
         self, 
@@ -74,6 +71,18 @@ class Person:
 
         # Get the current stage
         self._current_stage = omni.usd.get_context().get_stage()
+
+        # Resolve assets root path lazily (carb settings are available by the time __init__ runs)
+        if Person.assets_root_path is None:
+            if Person.people_asset_folder:
+                Person.assets_root_path = Person.people_asset_folder
+            else:
+                try:
+                    root_path = get_assets_root_path()
+                    if root_path:
+                        Person.assets_root_path = f"{root_path}/Isaac/People/Characters"
+                except Exception as e:
+                    carb.log_error(f"Could not resolve Isaac Sim asset root path: {e}")
 
         # Variable that will hold the current state of the vehicle
         self._state = State()
