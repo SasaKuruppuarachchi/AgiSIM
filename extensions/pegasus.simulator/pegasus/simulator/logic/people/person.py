@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation
 
 # Low level APIs
 import carb
-from pxr import Sdf
+from pxr import Sdf, Gf, UsdGeom
 
 # High level Isaac sim APIs
 import NavSchema
@@ -22,14 +22,10 @@ import isaacsim.core.experimental.utils.app as app_utils
 import isaacsim.core.experimental.utils.stage as stage_utils
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
-# New imports from the replicator API
 # omni.anim.graph.core is in extscache in Isaac Sim 6.0 and must be enabled before import
 from isaacsim.core.experimental.utils.app import enable_extension
 enable_extension("omni.anim.graph.core")
 import omni.anim.graph.core as ag
-import isaacsim.replicator.agent.core
-from isaacsim.replicator.agent.core.settings import PrimPaths
-from isaacsim.replicator.agent.core.stage_util import CharacterUtil
 
 # Extension APIs
 from pegasus.simulator.logic.state import State
@@ -45,7 +41,8 @@ class Person:
 
     # Get root assets path from setting, if not set, get the Isaac-Sim asset path
     people_asset_folder = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters/"
-    character_root_prim_path = PrimPaths.characters_parent_path()
+    # Default parent path for character prims (matches isaacsim.replicator.agent.core config default)
+    character_root_prim_path = "/World/Characters"
 
     assets_root_path = None   
 
@@ -265,12 +262,15 @@ class Person:
 
     def spawn_agent(self, usd_file, stage_name, init_pos, init_yaw):
 
-        # Get the last name after the last slash in the stage name
-        # We only want the name of the character, not the full path
-        character_name = stage_name.split("/")[-1]
-
-        # Spawn the character in the stage using the NVIDIA replicar API (which is suprisingly similar to the original version I provided in this function in version 4.2.0)
-        CharacterUtil.load_character_usd_to_stage(usd_file, init_pos, init_yaw, character_name)
+        # CharacterUtil.load_character_usd_to_stage was removed in Isaac Sim 6.0.
+        # Replicate its behavior: add a USD reference at the stage path and set the initial xform.
+        stage_utils.add_reference_to_stage(usd_path=usd_file, path=stage_name)
+        prim = self._current_stage.GetPrimAtPath(stage_name)
+        xformable = UsdGeom.Xformable(prim)
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3f(float(init_pos[0]), float(init_pos[1]), float(init_pos[2])))
+        yaw_quat = Rotation.from_euler('z', init_yaw, degrees=False).as_quat()  # [qx, qy, qz, qw]
+        xformable.AddOrientOp().Set(Gf.Quatf(float(yaw_quat[3]), float(yaw_quat[0]), float(yaw_quat[1]), float(yaw_quat[2])))
 
         # Add the current person to the person manager
         PeopleManager.get_people_manager().add_person(self._stage_prefix, self)
