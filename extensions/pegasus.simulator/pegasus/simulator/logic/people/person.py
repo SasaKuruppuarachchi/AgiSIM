@@ -5,6 +5,7 @@
 | Description: Definition of the Person class which is used as the base for spawning people in the simulation world.
 """
 
+import asyncio
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -15,6 +16,7 @@ from pxr import Sdf, Gf, UsdGeom
 # High level Isaac sim APIs
 import NavSchema
 import omni.client
+import omni.kit.app
 import omni.usd
 from omni.usd import get_stage_next_free_path
 from isaacsim.storage.native import get_assets_root_path
@@ -120,9 +122,11 @@ class Person:
         # Characters assets path:
         # https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/People/Characters/
 
-        # Add the animation graph to the agent, such that it can move around
+        # Add the animation graph to the agent, such that it can move around.
+        # ApplyBehaviorAgentAPICommand triggers OmniGraph creation which segfaults when
+        # called synchronously before the first app update; schedule it async instead.
         self.character_graph = None
-        self.add_animation_graph_to_agent()
+        asyncio.ensure_future(self._setup_animation_graph_async())
 
         # Set the controller for the person if any and initialize it
         self._controller = controller
@@ -314,6 +318,12 @@ class Person:
             except Exception as e:
                 carb.log_error(f"Failed to load HumanMotionLibrary: {e}")
 
+
+    async def _setup_animation_graph_async(self):
+        # Wait one frame so the HumanMotionLibrary payload is fully resolved and
+        # OmniGraph is ready to accept new nodes (avoids segfault in standalone mode).
+        await omni.kit.app.get_app().next_update_async()
+        self.add_animation_graph_to_agent()
 
     def add_animation_graph_to_agent(self):
         # In Isaac Sim 6.0, ApplyBehaviorAgentAPICommand replaces AnimationGraphAPI + Biped_Setup.usd.
