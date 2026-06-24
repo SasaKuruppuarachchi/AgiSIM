@@ -296,26 +296,38 @@ class Person:
         # Update the navigation mesh to include the character skeleton root prim
         omni.kit.commands.execute("ApplyNavMeshAPICommand", prim_path=stage_name, api=NavSchema.NavMeshExcludeAPI)
 
-        # If the base biped character is not present in the stage, spawn it
-        if not self._current_stage.GetPrimAtPath(Person.character_root_prim_path + "/Biped_Setup"):
-            stage_utils.add_reference_to_stage(
-                usd_path=Person.assets_root_path + "/Biped_Setup.usd",
-                path=Person.character_root_prim_path + "/Biped_Setup",
-            )
-            prim = self._current_stage.GetPrimAtPath(Person.character_root_prim_path + "/Biped_Setup")
-            prim.GetAttribute("visibility").Set("invisible")
+        # Load HumanMotionLibrary (replaces Biped_Setup.usd in Isaac Sim 6.0)
+        motion_library_prim_path = Person.character_root_prim_path + "/HumanMotionLibrary"
+        if not self._current_stage.GetPrimAtPath(motion_library_prim_path):
+            try:
+                root_path = get_assets_root_path()
+                motion_library_url = f"{root_path}/Isaac/People/MotionLibrary/HumanMotionLibrary.usd"
+                omni.kit.commands.execute(
+                    "CreatePayloadCommand",
+                    usd_context=omni.usd.get_context(),
+                    path_to=motion_library_prim_path,
+                    asset_path=motion_library_url,
+                    prim_path=None,
+                    instanceable=False,
+                    select_prim=False,
+                )
+            except Exception as e:
+                carb.log_error(f"Failed to load HumanMotionLibrary: {e}")
 
 
     def add_animation_graph_to_agent(self):
-
-        # Get the animation graph that we are going to add to the person
-        animation_graph = self._current_stage.GetPrimAtPath(Person.character_root_prim_path + "/Biped_Setup/CharacterAnimation/AnimationGraph")
-
-        # Remove the animation graph attribute if it exists
-        omni.kit.commands.execute("RemoveAnimationGraphAPICommand", paths=[Sdf.Path(self.character_skel_root.GetPrimPath())])
-
-        # Add the animation graph to the character
-        omni.kit.commands.execute("ApplyAnimationGraphAPICommand", paths=[Sdf.Path(self.character_skel_root.GetPrimPath())], animation_graph_path=Sdf.Path(animation_graph.GetPrimPath()))
+        # In Isaac Sim 6.0, ApplyBehaviorAgentAPICommand replaces AnimationGraphAPI + Biped_Setup.usd.
+        # Apply the BehaviorAgentAPI to the character's SkelRoot, pointing at the HumanMotionLibrary.
+        if self.character_skel_root is None:
+            carb.log_warn("No SkelRoot found for character — skipping BehaviorAgentAPI setup.")
+            return
+        motion_library_prim_path = Person.character_root_prim_path + "/HumanMotionLibrary"
+        omni.kit.commands.execute(
+            "ApplyBehaviorAgentAPICommand",
+            skelroot_prim_paths=[self.character_skel_root.GetPath()],
+            motion_library_prim_path=motion_library_prim_path,
+            motion_library_skeleton_rig="Human",
+        )
 
 
     @staticmethod
