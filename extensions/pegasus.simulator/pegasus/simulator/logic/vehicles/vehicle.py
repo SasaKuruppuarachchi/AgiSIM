@@ -68,6 +68,10 @@ class Vehicle:
             init_orientation (list): The initial orientation of the vehicle in quaternion [qx, qy, qz, qw]. Defaults to [0.0, 0.0, 0.0, 1.0].
         """
 
+        # Initialize callback IDs to None so __del__ is safe even if __init__ fails partway
+        self._cb_state = self._cb_update = self._cb_sensors = self._cb_sim_state = None
+        self._cb_sim_start = self._cb_sim_stop = self._cb_render = None
+
         # Get the current stage
         self._current_stage = omni.usd.get_context().get_stage()
 
@@ -88,8 +92,8 @@ class Vehicle:
         xformable = UsdGeom.Xformable(self._prim)
         xformable.ClearXformOpOrder()
         xformable.AddTranslateOp().Set(Gf.Vec3d(init_pos[0], init_pos[1], init_pos[2]))
-        # Convert [qx, qy, qz, qw] → [qw, qx, qy, qz] for USD/GfQuatd
-        xformable.AddOrientOp().Set(Gf.Quatd(init_orientation[3], init_orientation[0], init_orientation[1], init_orientation[2]))
+        # Convert [qx, qy, qz, qw] → [qw, qx, qy, qz] for USD; use Quatf (single precision) to match the op type in NVIDIA USD assets
+        xformable.AddOrientOp().Set(Gf.Quatf(init_orientation[3], init_orientation[0], init_orientation[1], init_orientation[2]))
 
         # Body rigid prim — created lazily after simulation starts
         self._body_rigid_prim: RigidPrim | None = None
@@ -163,15 +167,17 @@ class Vehicle:
         # Deregister all SimulationManager callbacks
         for cb_id in (self._cb_state, self._cb_update, self._cb_sensors, self._cb_sim_state,
                       self._cb_sim_start, self._cb_sim_stop):
+            if cb_id is not None:
+                try:
+                    SimulationManager.deregister_callback(cb_id)
+                except Exception:
+                    pass
+        # Deregister RenderingManager callback
+        if self._cb_render is not None:
             try:
-                SimulationManager.deregister_callback(cb_id)
+                RenderingManager.deregister_callback(self._cb_render)
             except Exception:
                 pass
-        # Deregister RenderingManager callback
-        try:
-            RenderingManager.deregister_callback(self._cb_render)
-        except Exception:
-            pass
 
         # Remove this object from the vehicleHandler
         VehicleManager.get_vehicle_manager().remove_vehicle(self._stage_prefix)
