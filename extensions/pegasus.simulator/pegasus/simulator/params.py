@@ -60,7 +60,7 @@ OMNIVERSE_ENVIRONMENTS = {
 
 PEGASUS_ENVIRONMENTS = {
     "Box Room": ASSET_PATH + "/Worlds/Box/Box.usd",
-    "Box with Cylinders": ASSET_PATH + "/Worlds/BoxWithCylinders/BoxWithCylinders.usd"
+    "Box with Cylinders": ASSET_PATH + "/Worlds/BoxWithCylinders/BoxWithCylinders_optimized.usdc"
 }
 
 SIMULATION_ENVIRONMENTS = {}
@@ -88,7 +88,7 @@ BACKENDS = {
 # Define the default settings for the simulation environment
 WORLD_SETTINGS = {
     'px4': {
-        "physics_dt": 1.0 / 100.0,
+        "physics_dt": 1.0 / 250.0,
         "stage_units_in_meters": 1.0,
         "rendering_dt": 1.0 / 60.0,
         "device": "cpu"
