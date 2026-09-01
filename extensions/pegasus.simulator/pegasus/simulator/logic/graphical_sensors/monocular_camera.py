@@ -166,6 +166,7 @@ class MonocularCamera(GraphicalSensor):
             self._state["frequency"] = self._frequency
             self._state["camera"] = self._camera
             self._state["intrinsics"] = self._intrinsics
+            self._state["distortion_coefficients"] = self._distortion_coefficients
 
             if self._depth:
                 self._state["depth"] = True

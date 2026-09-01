@@ -1,0 +1,3 @@
+[submodule "extensions/pegasus.simulator/pegasus/simulator/assets/Worlds/isaac_envs"]
+	path = extensions/pegasus.simulator/pegasus/simulator/assets/Worlds/isaac_envs
+	url = https://github.com/SasaKuruppuarachchi/isaac_envs.git

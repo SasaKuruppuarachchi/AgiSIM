@@ -94,6 +94,10 @@ class Multirotor(Vehicle):
         # Cache DOF indices for rotor joints keyed by rotor number
         self._rotor_dof_indices: dict[int, int] = {}
 
+        # Save forces and rolling moment for telemetry / logging access
+        self.forces = [0.0 for _ in range(self._thrusters._num_rotors)]
+        self.rolling_moment = 0.0
+
     def start(self):
         """Set up the articulation handle when simulation starts."""
         self._articulation = Articulation(paths=self._stage_prefix)
@@ -125,6 +129,7 @@ class Multirotor(Vehicle):
 
         # Get the desired forces to apply to the vehicle
         forces_z, _, rolling_moment = self._thrusters.update(self._state, dt)
+        self.forces, self.rolling_moment = forces_z, rolling_moment
 
         # Apply force to each rotor
         for i in range(4):

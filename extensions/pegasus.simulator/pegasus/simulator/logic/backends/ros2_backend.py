@@ -79,6 +79,7 @@ class ROS2Backend(Backend):
 
         # Save what whould be published/subscribed
         self._pub_graphical_sensors = config.get("pub_graphical_sensors", True)
+        self._pub_lidar_laserscan = config.get("pub_lidar_laserscan", True)
         self._pub_sensors = config.get("pub_sensors", True)
         self._pub_state = config.get("pub_state", True)
         self._sub_control = config.get("sub_control", True)
@@ -455,19 +456,28 @@ class ROS2Backend(Backend):
         # List all the available writers: print(rep.writers.WriterRegistry._writers)
         render_prod_path = rep.create.render_product(data["stage_prim_path"], [1, 1], name=data["lidar_name"])
 
+        frame_id = (
+            self._namespace + str(self._id) + "/" + data["frame_id"]
+            if "frame_id" in data
+            else data["lidar_name"]
+        )
+        topic_name = data.get("topic_name", data["lidar_name"] + "/pointcloud")
+
         # Create the writer for the lidar
         writer = rep.writers.get("RtxLidarROS2PublishPointCloud")
-        writer.initialize(nodeNamespace=self._namespace + str(self._id), topicName=data["lidar_name"] + "/pointcloud", frameId=data["lidar_name"])
+        writer.initialize(nodeNamespace=self._namespace + str(self._id), topicName=topic_name, frameId=frame_id)
         writer.attach([render_prod_path])
 
         # Add the writer to the dictionary
         self.graphical_sensors_writers[data["lidar_name"]] = [writer]
 
-        # Create the writer for publishing a laser scan message along with the point cloud
-        writer = rep.writers.get("RtxLidarROS2PublishLaserScan")
-        writer.initialize(nodeNamespace=self._namespace + str(self._id), topicName=data["lidar_name"] + "/laserscan", frameId=data["lidar_name"])
-        writer.attach([render_prod_path])
-        self.graphical_sensors_writers[data["lidar_name"]].append(writer)
+        # LaserScan requires a 2D lidar profile (all beams at 0 elevation).
+        # Keep it optional so 3D lidars (e.g., Mid_360) can publish pointcloud without FlatScan errors.
+        if self._pub_lidar_laserscan:
+            writer = rep.writers.get("RtxLidarROS2PublishLaserScan")
+            writer.initialize(nodeNamespace=self._namespace + str(self._id), topicName=data["lidar_name"] + "/laserscan", frameId=frame_id)
+            writer.attach([render_prod_path])
+            self.graphical_sensors_writers[data["lidar_name"]].append(writer)
 
     def input_reference(self):
         """

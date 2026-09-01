@@ -42,9 +42,18 @@ class Lidar(GraphicalSensor):
 
         # Configurations of the Lidar
         self._position = config.get("position", np.array([0.0, 0.0, 0.10]))
-        self._orientation = Rotation.from_euler("ZYX", config.get("orientation", np.array([0.0, 0.0, 0.0])), degrees=True).as_quat()
+        ori_config = config.get("orientation", np.array([0.0, 0.0, 0.0]))
+        if len(ori_config) == 3:
+            quat = Rotation.from_euler("ZYX", ori_config, degrees=True).as_quat() # [qx, qy, qz, qw]
+            self._orientation = np.array([quat[3], quat[0], quat[1], quat[2]]) # [qw, qx, qy, qz]
+        elif len(ori_config) == 4:
+            self._orientation = np.array(ori_config) # [qw, qx, qy, qz]
+        else:
+            self._orientation = np.array([1.0, 0.0, 0.0, 0.0])
+
         self._sensor_configuration = config.get("sensor_configuration", "Example_Rotary")
         self._show_render = config.get("show_render", False)
+        self._frame_id = config.get("frame_id", "lidar_link")
 
         self._sensor = None
 
@@ -60,13 +69,19 @@ class Lidar(GraphicalSensor):
         # Get the camera name that was actually created (and update the camera name)
         self._lidar_name = self._stage_prim_path.rpartition("/")[-1]
         
+        sensor_cfg = (
+            self._sensor_configuration
+            if isinstance(self._sensor_configuration, str)
+            else self._sensor_configuration.get("sensor_configuration", "Example_Rotary")
+        )
+
         _, self._sensor = omni.kit.commands.execute(
             "IsaacSensorCreateRtxLidar",
             path=self._lidar_name,
             parent=self._vehicle.prim_path + "/body",
-            config= self._sensor_configuration["sensor_configuration"],
+            config=sensor_cfg,
             translation=(self._position[0], self._position[1], self._position[2]),
-            orientation=Gf.Quatd(self._orientation[3], self._orientation[0], self._orientation[1], self._orientation[2])
+            orientation=Gf.Quatd(self._orientation[0], self._orientation[1], self._orientation[2], self._orientation[3])
         )
     
     def start(self):
@@ -97,7 +112,11 @@ class Lidar(GraphicalSensor):
             (dict) A dictionary containing the current state of the sensor (the data produced by the sensor)
         """
 
-        # Just return the prim path and the name of the lidar
-        self._state = {"lidar_name": self._lidar_name, "stage_prim_path": self._stage_prim_path}
+        # Return the prim path, name, and frame_id of the lidar
+        self._state = {
+            "lidar_name": self._lidar_name,
+            "stage_prim_path": self._stage_prim_path,
+            "frame_id": self._frame_id
+        }
 
         return self._state
