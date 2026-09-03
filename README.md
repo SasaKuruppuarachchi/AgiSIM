@@ -323,7 +323,7 @@ Follow the instructions in the top right pane of docker tmux window
    1. Open up a [Foxglow](https://app.foxglove.dev/) account and bavigate to the dashboard
    2. Open connection with "ws://localhost:8765"
 
-Now we are ready for autonomy setup. See [Instructions](../autonomy/1_perception.md) to continue.
+Now we are ready for autonomy setup. See [Instructions](https://github.com/SasaKuruppuarachchi/agidocker) to continue setting up agidocker and beyond.
 
 ## Citation
 
