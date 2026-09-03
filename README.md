@@ -1,34 +1,329 @@
-# Pegasus Simulator
+# AgiSIM Simulator
 
-![IsaacSim 5.1.0](https://img.shields.io/badge/IsaacSim-5.1.0-brightgreen.svg)
-![PX4-Autopilot 1.14.3](https://img.shields.io/badge/PX4--Autopilot-1.14.3-brightgreen.svg)
-![ArduPilot-Copter 4.4](https://img.shields.io/badge/ArduPilot--Copter-4.4.0-brightgreen.svg)
-![Ubuntu 22.04](https://img.shields.io/badge/Ubuntu-22.04LTS-brightgreen.svg)
-[![](https://dcbadge.limes.pink/api/server/[INVITE](https://discord.gg/AjCxw2QUmt?style=flat))](https://discord.gg/AjCxw2QUmt)
+AgiSIM is an open-source NVIDIA Omniverse-based Unmanned Aerial System (UAS) simulation platform designed for software-in-the-loop (SIL) testing of autonomous flight controllers. AgiSIM is based on [Pegasus Simulator](https://github.com/PegasusSimulator/PegasusSimulator) project. but adds following key features:
 
-**Pegasus Simulator** is a framework built on top of [NVIDIA Omniverse](https://docs.omniverse.nvidia.com/) and [IsaacSim](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/overview.html). It is designed to provide an easy yet powerful way of simulating the dynamics of vehicles. It provides a simulation interface for [PX4](https://px4.io/) and [ArduPilot](https://ardupilot.org/) integration, as well as a custom python control interface. At the moment, only multirotor vehicles are supported, with support for other vehicle topologies planned for future versions.
+- Compatibility with Isaacsim 6.x series
+- Custom sensors with realistic physics
+- Enhanced GUI with more control over the simulation
+- Added support for Micro-ROS
+- Testing envrionemnt for  "AgiPix" Project
+- Agipix drone digital twin
 
-<p align = "center">
-<a href="https://youtu.be/_11OCFwf_GE" target="_blank"><img src="docs/_static/pegasus_cover.png" alt="Pegasus Simulator image" height="300"/></a>
-<a href="https://youtu.be/_11OCFwf_GE" target="_blank"><img src="docs/_static/mini demo.gif" alt="Pegasus Simulator gif" height="300"/></a>
-</p>
+![AgiSim Simulator](./assets/images/sim_test_hospital.png)
 
-Check the provided documentation [here](https://pegasussimulator.github.io/PegasusSimulator/) to discover how to install and use this framework.
+# Setting Up the AgiSIM Simulation Environment
 
-## Latest Updates
+### Prerequisites for host PC
+- Ubuntu 20.04/22.04 Operating System
+- NVIDIA GPU (RTX 2070 or higher)
+- NVIDIA GPU Driver (recommended version 525.85)
 
-⚠️ For users of versions prior to v5.1.0:
-A new command line tool named `isaac_run` is now used to launch Isaac Sim. **This is a function that should be added to your .bashrc or .zshrc file during the installation of Isaac Sim.** See [Installation Instructions](https://pegasussimulator.github.io/PegasusSimulator/source/setup/installation.html) for more details.
+### ROS2 Humble 
+&emsp; Follow the latest instructions at the [official page](https://docs.ros.org/en/humble/Installation.html)
 
-This was done to simplify the launching of Isaac Sim from the terminal with ROS2 support. All previous instructions that mentioned launching Isaac Sim examples from the examples folder using the `ISAACSIM_PYTHON` command should now use `isaac_run` instead.
+### tmux
+```bash
+sudo apt install tmux
+cd && git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+```
 
-Please refer to the updated documentation for more details.
+&emsp; if you are new to tmux or not already familiar wit tmux
+```bash
+wget https://raw.githubusercontent.com/SasaKuruppuarachchi/SasaKuruppuarachchi/main/.tmux.conf -P ~/
+```
+&emsp; go to .tmux.conf and edit line 12 "set -g prefix \`". This charactor "\`" depends on your keyboard layout.
 
-* **2025-10-26**: Pegasus Simulator v5.1.0 is released for Isaac 5.1.0. This version is **NOT** compatible with older versions of Isaac Sim. The Ardupilot experimental interface was not tested in this version. This update had an initial open-source contribution from [Victor Kallenbach](https://github.com/HO4X).
-* **2025-10-25**: Pegasus Simulator v4.5.1 is released for Isaac 4.5.0. This version is **NOT** compatible with older versions of Isaac Sim. The Ardupilot experimental interface was fixed and improved by [Seunghwan Jo](https://github.com/SwiftGust) and [Tomer Tiplitsky](https://github.com/TomerTip).
-* **2025-07-20**: Pegasus Simulator v4.5.0 is released for Isaac 4.5.0. This version is **NOT** compatible with older versions of Isaac Sim. The Ardupilot experimental interface was not tested in this version.
-* **2024-11-01**: Pegasus Simulator v4.2.0 is released for Isaac 4.2.0. This version is **NOT** compatible with older versions of Isaac Sim. This version includes a new experimental interface for Ardupilot integration, provided by open-source contributor [Tomer Tiplitsky](https://github.com/TomerTip).
-* **2024-08-02**: Pegasus Simulator v4.1.0 is released for Isaac 4.1.0. This version is **NOT** compatible with older versions of Isaac Sim.
+# IsaacSIM Installation
+> This documentation is tested for the current stable version 5.1.0. This will be updated as new stable release published
+
+Quick install instructions: [Official Documentation](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/quick-install.html)
+
+```bash
+mkdir isaac-sim
+cd isaac-sim/
+wget https://download.isaacsim.omniverse.nvidia.com/isaac-sim-standalone-6.0.1-linux-x86_64.zip
+unzip "isaac-sim-standalone-6.0.1-linux-x86_64.zip" -d ~/isaacsim
+rm isaac-sim-standalone-6.0.1-linux-x86_64.zip # optionally clean install artifacts
+cd ~/isaacsim
+./post_install.sh
+```
+Setup environemnt vars
+```bash
+cat <<'EOF' >> ~/.bashrc
+
+# ---------------------------
+# ISAAC SIM SETUP
+# ---------------------------
+# Isaac Sim root directory
+export ISAACSIM_PATH="${HOME}/isaacsim"
+# Isaac Sim python executable
+export ISAACSIM_PYTHON="${ISAACSIM_PATH}/python.sh"
+# Isaac Sim app
+export ISAACSIM="${ISAACSIM_PATH}/isaac-sim.sh"
+
+# Define an auxiliary function to launch Isaac Sim or run scripts with Isaac Sim's python
+# This is done to avoid conflicts between ROS 2 and Isaac Sim's Python environment
+isaac_run() {
+
+    # ------------------
+    # === VALIDATION ===
+    # ------------------
+    if [ ! -x "$ISAACSIM_PYTHON" ]; then
+        echo "❌ IsaacSim python.sh not found at: $ISAACSIM_PYTHON"
+        return 1
+    fi
+    if [ ! -x "$ISAACSIM" ]; then
+        echo "❌ IsaacSim launcher not found at: $ISAACSIM"
+        return 1
+    fi
+
+    # -------------------------
+    # === CLEAN ENVIRONMENT ===
+    # -------------------------
+    # Unset ROS 2 environment variables to avoid conflicts with Isaac's Python 3.11
+    unset ROS_VERSION ROS_PYTHON_VERSION ROS_DISTRO AMENT_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH CMAKE_PREFIX_PATH
+
+    # Remove ROS 2 paths from LD_LIBRARY_PATH if present
+    local ros_paths=("/opt/ros/humble" "/opt/ros/jazzy" "/opt/ros/iron")
+    for ros_path in "${ros_paths[@]}"; do
+        export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "^${ros_path}" | paste -sd':' -)
+    done
+
+    # -----------------------------
+    # === UBUNTU VERSION CHECK ===
+    # -----------------------------
+
+    if [ -f /etc/os-release ]; then
+        UBUNTU_VERSION=$(grep "^VERSION_ID=" /etc/os-release | cut -d'"' -f2)
+    fi
+
+    # If Ubuntu 24.04 -> use the Isaac Sim internal ROS2 Jazzy (ROS2 Jazzy bridge)
+    if [[ "$UBUNTU_VERSION" == "24.04" ]]; then
+        export ROS_DISTRO=jazzy
+        export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${ISAACSIM_PATH}/exts/isaacsim.ros2.bridge/jazzy/lib"
+        echo "🧩 Detected Ubuntu 24.04 -> Using ROS_DISTRO=jazzy"
+    # If Ubuntu 22.04 -> use the Isaac Sim internal ROS2 Humble (ROS2 Humble bridge)
+    else
+        export ROS_DISTRO=humble
+        export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${ISAACSIM_PATH}/exts/isaacsim.ros2.bridge/humble/lib"
+        echo "🧩 Detected Ubuntu ${UBUNTU_VERSION:-unknown} -> Using ROS_DISTRO=humble"
+    fi
+
+    # ---------------------
+    # === RUN ISAAC SIM ===
+    # ---------------------
+    if [ $# -eq 0 ]; then
+        # No args → Launch full Isaac Sim GUI
+        echo "🧠 Launching Isaac Sim GUI..."
+        "${ISAACSIM}"
+
+    elif [[ "$1" == --* ]]; then
+        # Arguments start with "--" → pass them to Isaac Sim executable
+        echo "⚙️  Launching Isaac Sim with options: $*"
+        "${ISAACSIM}" "$@"
+
+    elif [ -f "$1" ]; then
+        # First argument is a Python file → run with Isaac Sim's Python
+        local SCRIPT_PATH="$1"
+        shift
+        echo "🚀 Running Python script with Isaac Sim: $SCRIPT_PATH"
+        "${ISAACSIM_PYTHON}" "$SCRIPT_PATH" "$@"
+
+    else
+        # Unrecognized input
+        echo "❌ Unknown argument or file not found: '$1'"
+        echo "Usage:"
+        echo "  isaac_run                 → launch GUI"
+        echo "  isaac_run my_script.py    → run script with IsaacSim Python"
+        echo "  isaac_run --headless ...  → launch IsaacSim with CLI flags"
+        return 1
+    fi
+}
+alias agisim="cd ~/workspace/raicam-ros/src/isaac_ros_common/ && ./run_sim.sh"
+export ROS_DOMAIN_ID=3
+export ROS_DISTRO=humble
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/sasa/isaacsim/exts/isaacsim.ros2.core/jazzy/lib
+
+EOF
+source ~/.bashrc
+```
+
+Running IsaacSIM
+
+
+### Nucleus Server
+> Depreciated
+
+&emsp; [Download](https://docs.omniverse.nvidia.com/install-guide/latest/workstation-install.html) and install Omniverse Launcher and install [Nucleus Server](https://docs.omniverse.nvidia.com/launcher/latest/workstation-launcher.html#collaboration-tab)
+&emsp; Go to the library and install ISAACSIM.
+
+### Enable ROS2 extension
+&emsp; Open IsaacSIM > Window > Extension > ROS2 bridge – enable (Autoload)
+
+### Installing Qgroundcontrol (for PX4 based implementations)
+&emsp; Follow the latest instructions at the [official page](https://docs.qgroundcontrol.com/master/en/qgc-user-guide/getting_started/download_and_install.html)
+
+```bash
+sudo usermod -aG dialout "$(id -un)"
+```
+(Optional) Disable ModemManager On some Ubuntu-based systems, ModemManager can claim serial ports that QGC needs. If you don't use it elsewhere, mask or remove it.
+```bash
+# preferred: stop and mask the service
+sudo systemctl mask --now ModemManager.service
+
+# or, if you’d rather remove the package
+sudo apt remove --purge modemmanager
+```
+On the command prompt, enter:
+```bash
+sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
+sudo apt install libfuse2 -y
+sudo apt install libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
+```
+To install QGroundControl:
+
+1. Download [QGroundControl-x86_64.AppImage](https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl-x86_64.AppImage).
+
+2. Make the AppImage executable
+
+```bash
+chmod +x QGroundControl-x86_64.AppImage
+./QGroundControl-x86_64.AppImage
+```
+
+### PX4 firmware
+
+```bash
+# Linux packages
+sudo apt install git make cmake python3-pip
+
+# Python packages
+pip install kconfiglib jinja2 empy jsonschema pyros-genmsg packaging toml numpy future
+
+cd $HOME
+git clone https://github.com/PX4/PX4-Autopilot.git -b v1.17.0 --recursive
+cd PX4-Autopilot
+make px4_sitl_default none
+```
+if PX4 launched properly you can exit out of it.
+&emsp; For further information [visit here](https://docs.px4.io/main/en/dev_setup/building_px4.html)
+
+##### (Optional) If an `externally-managed-environment` Use an venv
+```bash
+sudo apt install python3-venv python3-pip python3-full
+cd PX4-Autopilot
+# setup and activate venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install empy jinja2 numpy toml pyyaml packaging
+# install and fix python deps
+pip install kconfiglib jinja2 empy jsonschema pyros-genmsg packaging toml numpy future
+pip uninstall empy
+pip install empy==3.3.4
+# Build Px4 
+make clean
+make px4_sitl_default none
+```
+
+To synchronise the time stamps with the simulator we need to set the parameter [UXRCE_DDS_SYNCT](https://docs.px4.io/main/en/advanced_config/parameter_reference.html#UXRCE_DDS_SYNCT) to `false`. To do that,
+1. Open the rcS file at `/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/rcS`
+2. Paste the following line before ´#Autostart ID´
+```bash
+param set-default UXRCE_DDS_SYNCT 0
+param set-default UXRCE_DDS_DOM_ID 3
+```
+3. Rebuild the firmware
+```bash
+cd $HOME
+cd PX4-Autopilot
+make px4_sitl_default none
+```
+4. Make sure to set the parameter `use_sim_time` (of each ROS2 node) to `true`
+
+### Pegusus simulaotor
+&emsp; Cloning into the repo and the assets
+```bash
+cd $HOME
+git clone https://github.com/SasaKuruppuarachchi/AgiSIM.git --recursive
+```
+&emsp; Installing the extension as a library
+
+```bash
+cd ~/isaacsim
+./python.sh -m pip install --editable  $HOME/AgiSIM/extensions/pegasus.simulator
+```
+
+> [!NOTE]
+> For the first time, launching Isaac Sim takes a very long time.
+> Isaac Sim must be fully launched to spawn the robot.
+
+### Enabling Pegasus Simulator in Isaacsim (First Operation)
+
+1. Launch ``isaac_run`` application.
+
+2. Open the Window->extensions on the top menubar inside Isaac Sim.
+   ![alt text](https://github.com/PegasusSimulator/PegasusSimulator/blob/main/docs/_static/extensions_menu_bar.png?raw=1)
+
+3. On the Extensions manager menu, we can enable or disable extensions. By pressing the settings button, we can 
+add a path to the Pegasus-Simulator repository.
+
+   ![alt text](https://github.com/PegasusSimulator/PegasusSimulator/blob/main/docs/_static/extensions_widget.png?raw=1)
+
+4. The path inserted should be the path to the repository followed by ``/extensions``.
+
+   ![alt text](https://github.com/PegasusSimulator/PegasusSimulator/blob/main/docs/_static/ading_extension_path.png?raw=1)
+
+
+5. After adding the path to the extension, we can enable the Pegasus Simulator extension on the third-party tab.
+
+   ![alt text](https://github.com/PegasusSimulator/PegasusSimulator/blob/main/docs/_static/pegasus_inside_extensions_menu.png?raw=1)
+
+
+When enabling the extension for the first time, the python requirements should be install automatically for the build in 
+``ISAACSIM_PYTHON`` , and after a few seconds, the Pegasus widget GUI should pop-up.
+
+6. The Pegasus Simulator window should appear docked to the bottom-right section of the screen.
+
+   ![alt text](https://github.com/PegasusSimulator/PegasusSimulator/blob/main/docs/_static/pegasus_gui_example.png?raw=1)
+
+## Post setups
+The helper script will do following tasks:
+- Setup the environment variables for IsaacSim and ROS2 bridge
+- download the required assets for the simulation
+- setup lidar assets and the required configuration files for the simulation
+```bash
+cd $HOME/AgiSIM/scripts
+./setup_isaacsim.sh
+```
+
+
+## Running the Simulation
+
+1. Open a new terminal to launch the simulator
+   ```bash
+   cd $HOME/AgiSIM/scripts && ./run_sim.sh
+   # press ENTER after moving to the right pane to launch IsaacSim
+   ```
+
+2. In a new terminal run the docker container
+   ```bash
+   # inside the agidocker container
+   runagi
+   ```
+3. Controlling the drone
+
+Follow the instructions in the top right pane of docker tmux window
+
+4. Opening the UI
+
+   1. Open up a [Foxglow](https://app.foxglove.dev/) account and bavigate to the dashboard
+   2. Open connection with "ws://localhost:8765"
+
+Now we are ready for autonomy setup. See [Instructions](../autonomy/1_perception.md) to continue.
 
 ## Citation
 
@@ -45,63 +340,3 @@ If you find Pegasus Simulator useful in your academic work, please cite the pape
   keywords={Simulation;Robot sensing systems;Real-time systems;Sensor systems;Sensors;Task analysis},
   doi={10.1109/ICUAS60882.2024.10556959}}
 ```
-
-## Main Developer Team
-
-This simulation framework is an open-source effort, started by me, Marcelo Jacinto in January/2023. It is a tool that was created with the original purpose of serving my Ph.D. workplan for the next 4 years, which means that you can expect this repository to be mantained, hopefully at least until 2027.
-
-* Project Founder
-	* [Marcelo Jacinto](https://github.com/MarceloJacinto), under the supervision of <u>Prof. Rita Cunha</u> and <u>Prof. Antonio Pascoal</u> (IST/ISR-Lisbon)
-* Architecture
-  * [Marcelo Jacinto](https://github.com/MarceloJacinto)
-  * [João Pinto](https://github.com/jschpinto)
-* Multirotor Dynamic Simulation and Control
-  * [Marcelo Jacinto](https://github.com/MarceloJacinto)
-* Example Applications
-	* [Marcelo Jacinto](https://github.com/MarceloJacinto)
-	* [João Pinto](https://github.com/jschpinto)
-* Ardupilot Integration (Experimental)
-  * [Tomer Tiplitsky](https://github.com/TomerTip)
-  * [Tanner Gilbert](https://github.com/TannerGilbert)
-  * [Seunghwan Jo](https://github.com/SwiftGust)
-
-Also check the always up-to-date [Github contributors list](https://github.com/PegasusSimulator/PegasusSimulator/graphs/contributors) with all the open-source contributors.
-
-## Guidance, Control and Navigation Project
-
-In parallel to this project, the Pegasus (GNC) guidance, control, and navigation project serves as the foundation control code for performing real-world experiments for my Ph.D. More information can be found at this link:
-[Pegasus GNC](https://pegasusresearch.github.io/pegasus/)
-
-## Project Roadmap
-
-An high level project roadmap is available [here](https://pegasussimulator.github.io/PegasusSimulator/source/references/roadmap.html).
-
-## Support and Contributing
-
-We welcome new contributions from the community to improve this work. Please check the [Contributing](https://pegasussimulator.github.io/PegasusSimulator/source/references/contributing.html) section in the documentation for the guidelines on how to help improve and support this project.
-
-* Use [Discussions](https://github.com/PegasusSimulator/PegasusSimulator/discussions) for discussing ideas, asking questions, and requests features.
-* Use [Issues](https://github.com/PegasusSimulator/PegasusSimulator/issues) to track work in development, bugs and documentation issues.
-* Use [Pull Requests](https://github.com/PegasusSimulator/PegasusSimulator/pulls) to fix bugs or contribute directly with your own ideas, code, examples or improve documentation.
-
-## Licenses
-
-Pegasus Simulator is released under [BSD-3 License](LICENSE). The license files of its dependencies and assets are present in the [`docs/licenses`](docs/licenses) directory.
-
-NVIDIA Isaac Sim is available freely under [individual license](https://www.nvidia.com/en-us/omniverse/download/). 
-
-PX4-Autopilot is available as an open-source project under [BSD-3 License](https://github.com/PX4/PX4-Autopilot).
-
-## Project Sponsors
-- Dynamics Systems and Ocean Robotics (DSOR) group of the Institute for Systems and Robotics (ISR), a research unit of the Laboratory of Robotics and Engineering Systems (LARSyS).
-- Instituto Superior Técnico, Universidade de Lisboa
-
-The work developed by Marcelo Jacinto and João Pinto was supported by Ph.D. grants funded by Fundação para a Ciência e Tecnologia (FCT).
-
-<p float="left" align="center">
-  <img src="docs/_static/dsor_logo.png" width="90" align="center" />
-  <img src="docs/_static/logo_isr.png" width="200" align="center"/> 
-  <img src="docs/_static/larsys_logo.png" width="200" align="center"/> 
-  <img src="docs/_static/ist_logo.png" width="200" align="center"/> 
-  <img src="docs/_static/logo_fct.png" width="200" align="center"/> 
-</p>
