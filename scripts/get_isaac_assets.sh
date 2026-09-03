@@ -232,5 +232,6 @@ else
     echo "${BASHRC_EXPORT}" >> "$BASHRC_FILE"
     echo -e "${C_GREEN}[OK] ~/.bashrc updated with: ${BASHRC_EXPORT}${C_RESET}"
 fi
+source ~/.bashrc
 
 echo -e "\n${C_BOLD}${C_GREEN}✔ All checks and configurations completed.${C_RESET}"
