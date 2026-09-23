@@ -27,8 +27,11 @@ mkdir -p "$ISAACSIM_PATH"
 TARGET_DIR="${HOME}/isaac_sim_assets"
 mkdir -p "$TARGET_DIR"
 
-ASSET_ROOT_PATH="${TARGET_DIR}/Assets/Isaac/6.0"
-[ ! -d "$ASSET_ROOT_PATH" ] && [ -d "${TARGET_DIR}/assets/Isaac/6.0" ] && ASSET_ROOT_PATH="${TARGET_DIR}/assets/Isaac/6.0"
+ASSET_ROOT_PATH="${ISAACSIM_ASSET_ROOT:-${TARGET_DIR}/Assets/Isaac/6.0}"
+ASSET_ROOT_PATH="${ASSET_ROOT_PATH/#\~/$HOME}"
+if [ -z "${ISAACSIM_ASSET_ROOT:-}" ] && [ ! -d "$ASSET_ROOT_PATH" ] && [ -d "${TARGET_DIR}/assets/Isaac/6.0" ]; then
+    ASSET_ROOT_PATH="${TARGET_DIR}/assets/Isaac/6.0"
+fi
 
 echo -e "\n${C_BOLD}${C_GREEN}=== Configuration ===${C_RESET}"
 echo -e "${C_BOLD}ISAACSIM_PATH   :${C_RESET} ${ISAACSIM_PATH}"
@@ -143,7 +146,9 @@ if [ "$SKIP_DOWNLOAD_EXTRACTION" = false ]; then
     fi
 
     # Update path if extracted folder was lowercased
-    [ ! -d "$ASSET_ROOT_PATH" ] && [ -d "${TARGET_DIR}/assets/Isaac/6.0" ] && ASSET_ROOT_PATH="${TARGET_DIR}/assets/Isaac/6.0"
+    if [ -z "${ISAACSIM_ASSET_ROOT:-}" ] && [ ! -d "$ASSET_ROOT_PATH" ] && [ -d "${TARGET_DIR}/assets/Isaac/6.0" ]; then
+        ASSET_ROOT_PATH="${TARGET_DIR}/assets/Isaac/6.0"
+    fi
 fi
 
 # ---------------------------------------------------------
@@ -232,6 +237,6 @@ else
     echo "${BASHRC_EXPORT}" >> "$BASHRC_FILE"
     echo -e "${C_GREEN}[OK] ~/.bashrc updated with: ${BASHRC_EXPORT}${C_RESET}"
 fi
-source ~/.bashrc
+# This script runs in a child shell; sourcing .bashrc cannot update its caller.
 
 echo -e "\n${C_BOLD}${C_GREEN}✔ All checks and configurations completed.${C_RESET}"

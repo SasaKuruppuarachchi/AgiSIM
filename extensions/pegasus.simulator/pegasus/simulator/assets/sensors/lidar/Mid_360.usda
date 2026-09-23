@@ -62,9 +62,11 @@ def OmniLidar "Mid_360" (
     float omni:sensor:Core:rangeOffset = 0.03
     float omni:sensor:Core:rangeResolutionM = 0.004
     token omni:sensor:Core:rayType = "IDEALIZED"
-    uint omni:sensor:Core:reportRateBaseHz = 7761
+    # Isaac Sim 6 renamed reportRateBaseHz; retain the original pattern rate.
+    uint omni:sensor:Core:patternFiringRateHz = 7761
     token omni:sensor:Core:rotationDirection = "CW"
-    uint omni:sensor:Core:scanRateBaseHz = 20
+    uint omni:sensor:Core:scanRateBaseHz = 10
+    float omni:sensor:tickRate = 10
     token omni:sensor:Core:scanType = "ROTARY"
     bool omni:sensor:Core:skipDroppingInvalidPoints = 1
     float omni:sensor:Core:startAzimuthOffsetDeg = 0

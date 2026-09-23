@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation
 
 
 # SimulationApp must be created immediately after import in Isaac Sim standalone scripts.
-simulation_app = SimulationApp({"headless": False})
+simulation_app = SimulationApp({"headless": False, "enable_motion_bvh": True})
 
 
 import carb
@@ -25,14 +25,8 @@ import isaacsim.storage.native as nucleus
 
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 from isaacsim.core.experimental.utils.app import enable_extension
-try:
-    from isaacsim.sensors.physics import IMUSensor
-except ImportError:
-    try:
-        from omni.isaac.sensor import IMUSensor
-    except ImportError:
-        IMUSensor = None
-
+from isaacsim.sensors.experimental.physics import IMU, IMUSensor
+from pxr import Sdf, Usd
 
 # Ensure ROS2 bridge extension is enabled.
 enable_extension("isaacsim.ros2.bridge")
@@ -170,6 +164,31 @@ class AgipixApp:
             config=config_multirotor,
         )
 
+        self._resolve_vehicle_material_assets()
+
+    def _resolve_vehicle_material_assets(self):
+        """Resolve the bundled Agipix model's legacy materials against this installation."""
+        stage = omni.usd.get_context().get_stage()
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(self.drone.prim_path)):
+            for attribute in prim.GetAttributes():
+                if attribute.GetTypeName() != Sdf.ValueTypeNames.Asset:
+                    continue
+                # Read authored values without resolving obsolete URLs first.
+                value = next(
+                    (spec.default for spec in attribute.GetPropertyStack() if spec.HasInfo("default")),
+                    None,
+                )
+                if not isinstance(value, Sdf.AssetPath):
+                    continue
+                path = value.path
+                if "/Isaac/5.1/Isaac/Materials/" in path:
+                    relative = "Isaac/Materials/" + path.split("/Isaac/5.1/Isaac/Materials/", 1)[1]
+                elif path.startswith("omniverse://localhost/NVIDIA/Materials/"):
+                    relative = "Isaac/Materials/" + path.split("/NVIDIA/Materials/", 1)[1]
+                else:
+                    continue
+                attribute.Set(Sdf.AssetPath(self.assets_root_path.rstrip("/") + "/" + relative))
+
     def _setup_publishers_and_sensors(self):
         self.node = DroneLocationPublisher(
             namespace=self.namespace,
@@ -185,25 +204,17 @@ class AgipixApp:
         self.drone_prim = self.stage.GetPrimAtPath(self.drone._stage_prefix + "/body")
 
     def create_imu_sensor(self):
-        if IMUSensor is None:
-            carb.log_warn("IMUSensor class not found; skipping Isaac IMUSensor creation.")
-            return
-
-        try:
-            self.isaac_imu = IMUSensor(
-                prim_path=self.drone._stage_prefix + "/body/Imu",
-                name="imu",
-                frequency=100,
-                translation=np.array([0.0, 0.0, 0.0]),
-                orientation=np.array([0.0, -1.0, 0.0, 0.0]),
+        self.isaac_imu = IMUSensor(
+            IMU.create(
+                self.drone.prim_path + "/body/Imu",
+                translations=[[0.0, 0.0, 0.0]],
+                orientations=[[0.0, -1.0, 0.0, 0.0]],
                 linear_acceleration_filter_size=10,
                 angular_velocity_filter_size=10,
                 orientation_filter_size=10,
             )
-            carb.log_info("IMU sensor created successfully.")
-        except Exception as e:
-            carb.log_warn(f"Could not create IMUSensor: {e}")
-            self.isaac_imu = None
+        )
+        carb.log_info("IMU sensor created successfully.")
 
     def physics_step(self, dt: float, context=None):
         current_sim_time = SimulationManager.get_simulation_time()
@@ -228,11 +239,7 @@ class AgipixApp:
                 self.node.publish_gt_forces(self.drone.forces, self.drone.rolling_moment)
 
                 if self.isaac_imu is not None:
-                    try:
-                        imu_frame = self.isaac_imu.get_current_frame()
-                        self.node.publish_self_imu(imu_frame)
-                    except Exception:
-                        pass
+                    self.node.publish_self_imu(self.isaac_imu.get_data())
 
         if self.physics_stp_cnt >= int(self.phy_dt / self.pub_dt) - 1:
             self.physics_stp_cnt = 0

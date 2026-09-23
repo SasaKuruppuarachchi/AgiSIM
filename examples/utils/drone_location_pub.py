@@ -113,7 +113,7 @@ class DroneLocationPublisher(Node):
         msg.header.stamp = sim_time_
         msg.header.frame_id = f"{self.vehicle_name}/base_link"
 
-        lin_acc = self_imu.get("lin_acc", [0.0, 0.0, 0.0])
+        lin_acc = self_imu.get("linear_acceleration", self_imu.get("lin_acc", [0.0, 0.0, 0.0]))
         msg.linear_acceleration.x = float(lin_acc[0])
         msg.linear_acceleration.y = float(lin_acc[1])
         msg.linear_acceleration.z = float(lin_acc[2])
@@ -124,7 +124,7 @@ class DroneLocationPublisher(Node):
         msg.orientation.y = float(ori[2])
         msg.orientation.z = float(ori[3])
 
-        ang_vel = self_imu.get("ang_vel", [0.0, 0.0, 0.0])
+        ang_vel = self_imu.get("angular_velocity", self_imu.get("ang_vel", [0.0, 0.0, 0.0]))
         msg.angular_velocity.x = float(ang_vel[0])
         msg.angular_velocity.y = float(ang_vel[1])
         msg.angular_velocity.z = float(ang_vel[2])

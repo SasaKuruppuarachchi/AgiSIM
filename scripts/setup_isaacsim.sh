@@ -26,6 +26,7 @@ show_help() {
     echo ""
     echo "Environment Variables:"
     echo "  ISAACSIM_PATH      Path to Isaac Sim installation"
+    echo "  ISAACSIM_ASSET_ROOT  Local asset root (default: ~/isaac_sim_assets/Assets/Isaac/6.0)"
 }
 
 # ---------------------------------------------------------
@@ -76,6 +77,21 @@ echo -e "${C_BOLD}${C_GREEN}=============================================${C_RES
 echo -e "${C_BOLD}Isaac Sim Path :${C_RESET} ${ISAACSIM_PATH}"
 echo -e "${C_BOLD}AgiSIM Root    :${C_RESET} ${AGISIM_DIR}\n"
 
+# Resolve the asset root in this process: exports in the child setup script
+# cannot update our environment. Pass the same root to both setup steps.
+if [ -z "${ISAACSIM_ASSET_ROOT:-}" ]; then
+    ISAACSIM_ASSET_ROOT="${HOME}/isaac_sim_assets/Assets/Isaac/6.0"
+    if [ ! -d "$ISAACSIM_ASSET_ROOT" ] && [ -d "${HOME}/isaac_sim_assets/assets/Isaac/6.0" ]; then
+        ISAACSIM_ASSET_ROOT="${HOME}/isaac_sim_assets/assets/Isaac/6.0"
+    fi
+fi
+ISAACSIM_ASSET_ROOT="${ISAACSIM_ASSET_ROOT/#\~/$HOME}"
+if [[ "$ISAACSIM_ASSET_ROOT" != /* ]]; then
+    echo -e "${C_RED}[ERROR] ISAACSIM_ASSET_ROOT must be an absolute local directory.${C_RESET}"
+    exit 1
+fi
+export ISAACSIM_ASSET_ROOT
+
 # ---------------------------------------------------------
 # Step 1: Run get_isaac_assets.sh interactively
 # ---------------------------------------------------------
@@ -96,7 +112,7 @@ fi
 echo -e "\n${C_CYAN}${C_BOLD}[Step 2/4] Installing Mid-360 LiDAR asset...${C_RESET}"
 
 SRC_MID360="${AGISIM_DIR}/extensions/pegasus.simulator/pegasus/simulator/assets/sensors/lidar/Mid_360.usda"
-DEST_DIR="${ISAACSIM_PATH}/Assets/Isaac/6.0/Isaac/Sensors/NVIDIA"
+DEST_DIR="${ISAACSIM_ASSET_ROOT}/Isaac/Sensors/NVIDIA"
 DEST_MID360="${DEST_DIR}/Mid_360.usda"
 
 if [ ! -f "$SRC_MID360" ]; then
@@ -113,48 +129,84 @@ echo -e "${C_GREEN}[OK] Successfully copied Mid_360.usda to:${C_RESET} ${DEST_MI
 # ---------------------------------------------------------
 echo -e "\n${C_CYAN}${C_BOLD}[Step 3/4] Registering Mid-360 LiDAR in RTX configs...${C_RESET}"
 
-# Support both experimental (earlier Isaac Sim) and standard (Isaac Sim 4.5/6.0+) config paths
+# Isaac Sim 6 keeps the legacy command configuration in extsDeprecated.
+# The deprecated API may re-export the experimental registry.
 LIDAR_CONFIG_CANDIDATES=(
     "${ISAACSIM_PATH}/exts/isaacsim.sensors.experimental.rtx/isaacsim/sensors/experimental/rtx/impl/rtx_lidar_configs.py"
     "${ISAACSIM_PATH}/exts/isaacsim.sensors.rtx/isaacsim/sensors/rtx/impl/supported_lidar_configs.py"
+    "${ISAACSIM_PATH}/extsDeprecated/isaacsim.sensors.rtx/isaacsim/sensors/rtx/impl/supported_lidar_configs.py"
 )
 
 CONFIG_FOUND=false
 for config_file in "${LIDAR_CONFIG_CANDIDATES[@]}"; do
-    if [ -f "$config_file" ]; then
-        CONFIG_FOUND=true
-        if grep -Fq '"/Isaac/Sensors/NVIDIA/Mid_360.usda"' "$config_file"; then
-            echo -e "${C_GREEN}[SKIP] Mid_360.usda is already registered in:${C_RESET} ${config_file}"
-        else
-            echo -e "${C_YELLOW}Registering Mid_360.usda in:${C_RESET} ${config_file}..."
-            cp "$config_file" "${config_file}.bak"
-            python3 - "$config_file" << 'PYEOF'
-import sys
-import re
-
-file_path = sys.argv[1]
-with open(file_path, "r", encoding="utf-8") as f:
-    content = f.read()
-
-entry = '    "/Isaac/Sensors/NVIDIA/Mid_360.usda": set(),\n'
-pattern = r'(SUPPORTED_LIDAR_CONFIGS\s*(?::[^=]+)?=\s*\{[^\n]*\n)'
-
-if re.search(pattern, content):
-    new_content = re.sub(pattern, r'\1' + entry, content, count=1)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    print("SUCCESS")
-else:
-    print("ANCHOR_NOT_FOUND")
-    sys.exit(1)
-PYEOF
-            echo -e "${C_GREEN}[OK] Successfully registered Mid_360.usda in:${C_RESET} ${config_file}"
-        fi
+    if [ ! -f "$config_file" ]; then
+        continue
     fi
+    registration=$(python3 - "$config_file" << 'PYEOF'
+import ast
+from pathlib import Path
+import shutil
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+tree = ast.parse(content, filename=str(path))
+registry = None
+for node in tree.body:
+    targets = node.targets if isinstance(node, ast.Assign) else (
+        [node.target] if isinstance(node, ast.AnnAssign) else []
+    )
+    if any(isinstance(target, ast.Name) and target.id == "SUPPORTED_LIDAR_CONFIGS" for target in targets):
+        registry = node.value
+        break
+
+if registry is None:
+    # Isaac Sim 6's deprecated module re-exports the experimental registry.
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "isaacsim.sensors.experimental.rtx":
+            if any(alias.name == "SUPPORTED_LIDAR_CONFIGS" and alias.asname in (None, "SUPPORTED_LIDAR_CONFIGS") for alias in node.names):
+                print("REEXPORT")
+                sys.exit(0)
+    sys.exit(f"No supported LiDAR registry definition found in {path}")
+if not isinstance(registry, ast.Dict):
+    sys.exit(f"Unsupported LiDAR registry format in {path}; file left unchanged")
+
+asset = "/Isaac/Sensors/NVIDIA/Mid_360.usda"
+if any(isinstance(key, ast.Constant) and key.value == asset for key in registry.keys):
+    print("EXISTS")
+    sys.exit(0)
+
+# AST column offsets are UTF-8 byte offsets. Insert just inside the dictionary.
+lines = content.encode("utf-8").splitlines(keepends=True)
+offset = sum(map(len, lines[:registry.lineno - 1])) + registry.col_offset + 1
+entry = f'\n    "{asset}": set(),\n'.encode("utf-8")
+updated = (content.encode("utf-8")[:offset] + entry + content.encode("utf-8")[offset:]).decode("utf-8")
+compile(updated, str(path), "exec")
+backup = Path(str(path) + ".bak")
+if not backup.exists():
+    shutil.copy2(path, backup)
+path.write_text(updated, encoding="utf-8")
+print("ADDED")
+PYEOF
+    )
+    case "$registration" in
+        REEXPORT)
+            echo -e "${C_GREEN}[SKIP] Uses the shared experimental registry:${C_RESET} ${config_file}"
+            ;;
+        EXISTS|ADDED)
+            CONFIG_FOUND=true
+            echo -e "${C_GREEN}[OK] Mid_360.usda registered in:${C_RESET} ${config_file} (${registration})"
+            ;;
+        *)
+            echo -e "${C_RED}[ERROR] Unexpected registration result: ${registration}${C_RESET}"
+            exit 1
+            ;;
+    esac
 done
 
 if [ "$CONFIG_FOUND" = false ]; then
-    echo -e "${C_RED}[WARN] No RTX LiDAR config file found in Isaac Sim installation (${ISAACSIM_PATH}). Skipping registration.${C_RESET}"
+    echo -e "${C_RED}[ERROR] No writable LiDAR registry definition found in ${ISAACSIM_PATH}.${C_RESET}"
+    exit 1
 fi
 
 # ---------------------------------------------------------
