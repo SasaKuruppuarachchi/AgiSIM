@@ -442,8 +442,9 @@ class ROS2Backend(Backend):
 
         gate_path = omni.syntheticdata.SyntheticData._get_node_path("PostProcessDispatch" + "IsaacSimulationGate", render_prod_path)
 
-        # Set step input of the Isaac Simulation Gate nodes upstream of ROS publishers to control their execution rate
-        og.Controller.attribute(gate_path + ".inputs:step").set(int(60/data["frequency"]))
+        # Camera render ticks already enforce the requested frequency. A second
+        # 60/frequency gate would drop frames again under multi-tick rendering.
+        og.Controller.attribute(gate_path + ".inputs:step").set(1)
 
     def update_lidar_data(self, data):
 

@@ -14,10 +14,29 @@ from scipy.spatial.transform import Rotation
 
 
 # SimulationApp must be created immediately after import in Isaac Sim standalone scripts.
-simulation_app = SimulationApp({"headless": False, "enable_motion_bvh": True})
+simulation_app = SimulationApp({
+    "headless": False,
+    "enable_motion_bvh": True,
+    "limit_cpu_threads": int(os.environ.get("AGIPIX_CPU_THREADS", "8")),
+})
 
 
 import carb
+
+# A single CPU-physics vehicle runs faster without PhysX worker dispatch.
+# Restore the persistent preference before application shutdown.
+_thread_settings = carb.settings.get_settings()
+_previous_physics_threads = _thread_settings.get("/persistent/physics/numThreads")
+_thread_settings.set_int(
+    "/persistent/physics/numThreads", int(os.environ.get("AGIPIX_PHYSICS_THREADS", "0"))
+)
+
+
+def restore_thread_settings():
+    if _previous_physics_threads is not None:
+        _thread_settings.set_int("/persistent/physics/numThreads", _previous_physics_threads)
+
+
 import omni
 import omni.timeline
 import omni.usd
@@ -260,7 +279,7 @@ class AgipixApp:
                 pass
         carb.log_warn("Agipix Simulation App is closing.")
         self.timeline.stop()
-        simulation_app.close()
+        restore_thread_settings()
 
 
 def parse_cli_args():
@@ -283,8 +302,12 @@ def parse_cli_args():
 
 def main():
     args = parse_cli_args()
-    app = AgipixApp(namespace=args.namespace, vehicle_id=args.vehicle_id)
-    app.run()
+    try:
+        app = AgipixApp(namespace=args.namespace, vehicle_id=args.vehicle_id)
+        app.run()
+    finally:
+        restore_thread_settings()
+        simulation_app.close()
 
 
 if __name__ == "__main__":

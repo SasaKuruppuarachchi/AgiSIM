@@ -8,6 +8,7 @@
 __all__ = ["PegasusInterface"]
 
 import gc
+import math
 import yaml
 import asyncio
 import os
@@ -19,6 +20,7 @@ import carb
 import omni.kit.app
 import omni.usd
 from isaacsim.core.simulation_manager import SimulationManager
+from isaacsim.core.rendering_manager import RenderingManager
 import isaacsim.core.experimental.utils.app as app_utils
 import isaacsim.core.experimental.utils.stage as stage_utils
 import isaacsim.storage.native as nucleus
@@ -168,9 +170,23 @@ class PegasusInterface:
         carb.log_warn("New global coordinates set to: " + str(self._latitude) + ", " + str(self._longitude) + ", " + str(self._altitude))
 
     def initialize_world(self):
-        """Apply simulation settings (physics dt) via SimulationManager."""
+        """Configure physics and rendering before creating vehicle views or sensors."""
         physics_dt = self._world_settings.get("physics_dt", 1.0 / 250.0)
+        rendering_dt = self._world_settings.get("rendering_dt", 1.0 / 60.0)
+        RenderingManager.set_dt(rendering_dt)
         SimulationManager.set_physics_dt(physics_dt)
+        # New PhysX scenes default to GPU dynamics. Preserve the configured
+        # device (CPU for Pegasus) before any physics views are created.
+        SimulationManager.set_device(self._world_settings.get("device", "cpu"))
+        # Permit the occasional extra substep for non-integer ratios, e.g.
+        # 250 Hz physics / 30 Hz rendering needs both 8 and 9 substeps.
+        if physics_dt > 0:
+            substeps = max(1, math.ceil(rendering_dt / physics_dt))
+            max_min_rate = max(1, int((1.0 / physics_dt) / substeps))
+            settings = carb.settings.get_settings()
+            current = settings.get("/persistent/simulation/minFrameRate")
+            if current is not None and current > max_min_rate:
+                settings.set_int("/persistent/simulation/minFrameRate", max_min_rate)
 
     def get_vehicle(self, stage_prefix: str):
         """Method that returns the vehicle object given its 'stage_prefix', i.e., the name the vehicle was spawned with in the simulator.
@@ -245,8 +261,7 @@ class PegasusInterface:
 
         if force_clear:
             await stage_utils.create_new_stage_async()
-            physics_dt = self._world_settings.get("physics_dt", 1.0 / 250.0)
-            SimulationManager.set_physics_dt(physics_dt)
+            self.initialize_world()
 
         # Load the USD asset that will be used for the environment
         try:

@@ -10,6 +10,7 @@ from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.graphical_sensors import GraphicalSensor
 
 import omni.usd
+from pxr import Sdf
 from isaacsim.sensors.camera.camera import Camera
 from omni.usd import get_stage_next_free_path
 
@@ -103,6 +104,11 @@ class MonocularCamera(GraphicalSensor):
             frequency=self._frequency,
             resolution=self._resolution)
         
+        # Isaac Sim 6 schedules rendering through the sensor tick rate. The
+        # legacy Camera frequency only throttles Python frame acquisition.
+        prim = omni.usd.get_context().get_stage().GetPrimAtPath(self._stage_prim_path)
+        prim.CreateAttribute("omni:sensor:tickRate", Sdf.ValueTypeNames.Float).Set(float(self._frequency))
+
         # Set the camera position locally with respect to the drone
         self._camera.set_local_pose(np.array(self._position), Rotation.from_euler("ZYX", self._orientation, degrees=True).as_quat())
         

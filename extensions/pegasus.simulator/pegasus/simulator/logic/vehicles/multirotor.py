@@ -5,11 +5,12 @@
 | Description: Definition of the Multirotor class which is used as the base for all the multirotor vehicles.
 """
 
+import carb
 import numpy as np
 from pxr import UsdGeom
 
 import omni.usd
-from isaacsim.core.experimental.prims import Articulation
+from isaacsim.core.experimental.prims import Articulation, RigidPrim
 
 # The vehicle interface
 from pegasus.simulator.logic.vehicles.vehicle import Vehicle
@@ -40,6 +41,8 @@ class MultirotorConfig:
 
         # The default thrust curve for a quadrotor and dynamics relating to drag
         self.thrust_curve = QuadraticThrustCurve()
+        # CPU runtime fast path; disable to compare against the prim wrappers.
+        self.use_runtime_tensors = True
         self.drag = LinearDrag([0.50, 0.30, 0.0])
 
         # The default sensors for a quadrotor
@@ -88,25 +91,64 @@ class Multirotor(Vehicle):
         # 2. Setup the dynamics of the system - get the thrust curve of the vehicle from the configuration
         self._thrusters = config.thrust_curve
         self._drag = config.drag
+        self._use_runtime_tensors = config.use_runtime_tensors
 
         # Articulation handle — created lazily after simulation starts (physics tensor entity required)
         self._articulation: Articulation | None = None
         # Cache DOF indices for rotor joints keyed by rotor number
         self._rotor_dof_indices: dict[int, int] = {}
+        self._force_prims: RigidPrim | None = None
+        self._visual_rotors = []
+        self._visual_dof_indices = []
+        # Body is row 0; rotor i is row i + 1. Buffers are reused every step.
+        count = self._thrusters._num_rotors
+        self._force_buffer = np.zeros((count + 1, 3), dtype=np.float32)
+        self._torque_buffer = np.zeros_like(self._force_buffer)
+        self._position_buffer = np.zeros_like(self._force_buffer)
+        self._visual_velocity_buffer = np.zeros((1, count), dtype=np.float32)
 
         # Save forces and rolling moment for telemetry / logging access
         self.forces = [0.0 for _ in range(self._thrusters._num_rotors)]
         self.rolling_moment = 0.0
 
     def start(self):
-        """Set up the articulation handle when simulation starts."""
+        """Create physics views and resolve rotor joints for this simulation run."""
         self._articulation = Articulation(paths=self._stage_prefix)
         self._rotor_dof_indices = {}
+        count = self._thrusters._num_rotors
+        self._force_prims = RigidPrim(paths=[self._stage_prefix + "/body"] + [
+            self._stage_prefix + f"/rotor{i}" for i in range(count)
+        ])
+        self._force_buffer.fill(0)
+        self._torque_buffer.fill(0)
+        self._visual_rotors = []
+        self._visual_dof_indices = []
+        for rotor in range(count):
+            index = self._get_rotor_dof_index(rotor)
+            if index is not None:
+                self._visual_rotors.append(rotor)
+                self._visual_dof_indices.append(index)
+        self._visual_velocity_buffer = np.zeros((1, len(self._visual_rotors)), dtype=np.float32)
+        self._runtime_tensors = None
+        if self._use_runtime_tensors:
+            try:
+                from .multirotor_tensors import MultirotorTensors
+                self._runtime_tensors = MultirotorTensors(
+                    self._stage_prefix, self._force_buffer, self._torque_buffer, self._position_buffer
+                )
+            except Exception as exc:
+                # Tensor bindings can raise a plain Exception for unavailable backends.
+                carb.log_warn(f"Multirotor tensor optimization unavailable; using prim wrappers: {exc}")
+
 
     def stop(self):
-        """Release the articulation handle when simulation stops."""
+        """Release physics views so the next play creates fresh handles."""
+        self._runtime_tensors = None
         self._articulation = None
         self._rotor_dof_indices = {}
+        self._force_prims = None
+        self._visual_rotors = []
+        self._visual_dof_indices = []
 
     def update(self, dt: float, context=None):
         """
@@ -131,21 +173,32 @@ class Multirotor(Vehicle):
         forces_z, _, rolling_moment = self._thrusters.update(self._state, dt)
         self.forces, self.rolling_moment = forces_z, rolling_moment
 
-        # Apply force to each rotor
-        for i in range(4):
+        # Apply the same local forces at each link origin in one tensor call.
+        if self._force_prims is not None and self._force_prims.is_physics_tensor_entity_valid():
+            self._force_buffer[0] = self._drag.update(self._state, dt)
+            self._force_buffer[1:, 2] = forces_z
+            self._torque_buffer[0, 2] = rolling_moment
+            if self._runtime_tensors is not None and self._runtime_tensors.valid:
+                self._runtime_tensors.apply_forces()
+            else:
+                self._force_prims.apply_forces_and_torques_at_pos(
+                    forces=self._force_buffer,
+                    torques=self._torque_buffer,
+                    positions=self._position_buffer,
+                    local_frame=True,
+                )
 
-            # Apply the force in Z on the rotor frame
-            self.apply_force([0.0, 0.0, forces_z[i]], body_part="/rotor" + str(i))
-
-            # Generate the rotating propeller visual effect
-            self.handle_propeller_visual(i, forces_z[i])
-
-        # Apply the torque to the body frame of the vehicle that corresponds to the rolling moment
-        self.apply_torque([0.0, 0.0, rolling_moment], "/body")
-
-        # Compute the total linear drag force to apply to the vehicle's body frame
-        drag = self._drag.update(self._state, dt)
-        self.apply_force(drag, body_part="/body")
+        if self._visual_dof_indices and self._articulation.is_physics_tensor_entity_valid():
+            for column, rotor in enumerate(self._visual_rotors):
+                force = forces_z[rotor]
+                speed = 100.0 if force >= 0.1 else 5.0 if force > 0.0 else 0.0
+                self._visual_velocity_buffer[0, column] = speed * self._thrusters.rot_dir[rotor]
+            if self._runtime_tensors is not None and self._runtime_tensors.valid:
+                self._runtime_tensors.set_rotor_velocities(self._visual_velocity_buffer, self._visual_dof_indices)
+            else:
+                self._articulation.set_dof_velocities(
+                    self._visual_velocity_buffer, dof_indices=self._visual_dof_indices
+                )
 
         # Call the update methods in all backends
         for backend in self._backends:

@@ -97,6 +97,8 @@ class Vehicle:
 
         # Body rigid prim — created lazily after simulation starts
         self._body_rigid_prim: RigidPrim | None = None
+        self._runtime_tensors = None
+        self._rigid_prims: dict[str, RigidPrim] = {}
 
         # Add the current vehicle to the vehicle manager, so that it knows
         # that a vehicle was instantiated
@@ -224,6 +226,7 @@ class Vehicle:
 
             # Create (or re-create) the rigid prim wrapper now that physics is ready
             self._body_rigid_prim = RigidPrim(paths=self._stage_prefix + "/body")
+            self._rigid_prims = {"/body": self._body_rigid_prim}
 
             # Initialize the sensors
             for sensor in self._sensors:
@@ -246,6 +249,7 @@ class Vehicle:
 
             # Release the rigid prim wrapper so it can be re-created fresh on next play
             self._body_rigid_prim = None
+            self._rigid_prims.clear()
 
             # Stop the sensors
             for sensor in self._sensors:
@@ -274,8 +278,9 @@ class Vehicle:
         if self._body_rigid_prim is None or not self._body_rigid_prim.is_physics_tensor_entity_valid():
             return
 
-        prim_path = self._stage_prefix + body_part
-        rigid_prim = RigidPrim(paths=prim_path) if body_part != "/body" else self._body_rigid_prim
+        if body_part not in self._rigid_prims:
+            self._rigid_prims[body_part] = RigidPrim(paths=self._stage_prefix + body_part)
+        rigid_prim = self._rigid_prims[body_part]
 
         forces = np.array([[force[0], force[1], force[2]]], dtype=np.float32)
         torques = np.zeros((1, 3), dtype=np.float32)
@@ -293,8 +298,9 @@ class Vehicle:
         if self._body_rigid_prim is None or not self._body_rigid_prim.is_physics_tensor_entity_valid():
             return
 
-        prim_path = self._stage_prefix + body_part
-        rigid_prim = RigidPrim(paths=prim_path) if body_part != "/body" else self._body_rigid_prim
+        if body_part not in self._rigid_prims:
+            self._rigid_prims[body_part] = RigidPrim(paths=self._stage_prefix + body_part)
+        rigid_prim = self._rigid_prims[body_part]
 
         forces = np.zeros((1, 3), dtype=np.float32)
         torques = np.array([[torque[0], torque[1], torque[2]]], dtype=np.float32)
@@ -313,23 +319,20 @@ class Vehicle:
         if self._body_rigid_prim is None:
             return
 
-        # Get the current position and orientation from the body rigid prim
-        # get_world_poses() returns (positions wp.array Nx3, orientations wp.array Nx4 in wxyz)
-        positions, orientations = self._body_rigid_prim.get_world_poses()
-        pos = positions.numpy()[0]        # [x, y, z]
-        quat_wxyz = orientations.numpy()[0]  # [qw, qx, qy, qz]
+        if self._runtime_tensors is not None and self._runtime_tensors.valid:
+            pos, linear_vel, ang_vel_world = self._runtime_tensors.read_body_state()
+        else:
+            positions, _ = self._body_rigid_prim.get_world_poses()
+            linear_vels, angular_vels = self._body_rigid_prim.get_velocities()
+            pos = positions.numpy()[0]
+            linear_vel = linear_vels.numpy()[0]
+            ang_vel_world = angular_vels.numpy()[0]
 
         # Get the attitude via the USD rotation (more accurate for orientation)
         prim = self._current_stage.GetPrimAtPath(self._stage_prefix + "/body")
         rotation_quat = get_world_transform_xform(prim).GetQuaternion()
         rotation_quat_real = rotation_quat.GetReal()
         rotation_quat_img = rotation_quat.GetImaginary()
-
-        # Get the linear and angular velocities
-        # get_velocities() returns (linear wp.array Nx3, angular wp.array Nx3) both in world frame
-        linear_vels, angular_vels = self._body_rigid_prim.get_velocities()
-        linear_vel = linear_vels.numpy()[0]   # [vx, vy, vz] in world frame
-        ang_vel_world = angular_vels.numpy()[0]  # [wx, wy, wz] in world frame, rad/s
 
         # Convert warp float32 outputs to float64 so ROS 2 message fields pass PyFloat_Check
         pos = pos.astype(np.float64)
