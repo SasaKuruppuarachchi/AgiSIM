@@ -4,6 +4,7 @@ Agipix PX4 + ROS2 standalone example for Isaac Sim 6.0.
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -65,12 +66,15 @@ from drone_location_pub import DroneLocationPublisher
 
 
 DEFAULT_PHYSICS_HZ = 250.0
+DEFAULT_PHYSICS_DT = 1.0 / DEFAULT_PHYSICS_HZ
 DEFAULT_PUBLISH_HZ = 100.0
 DEFAULT_RENDER_HZ = 30.0
 
 
 class AgipixApp:
-    def __init__(self, namespace="drone", vehicle_id=0):
+    def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT):
+        if not math.isfinite(physics_dt) or physics_dt <= 0:
+            raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
         self.id = vehicle_id
         self.vehicle_name = f"{self.namespace}{self.id}"
@@ -78,7 +82,8 @@ class AgipixApp:
         self.timeline = omni.timeline.get_timeline_interface()
         self.assets_root_path = nucleus.get_assets_root_path()
 
-        self.phy_dt = DEFAULT_PHYSICS_HZ
+        # Existing publication scheduling uses the physics frequency in Hz.
+        self.phy_dt = 1.0 / physics_dt
         self.pub_dt = DEFAULT_PUBLISH_HZ
         self.rendering_dt = DEFAULT_RENDER_HZ
 
@@ -282,12 +287,25 @@ class AgipixApp:
         restore_thread_settings()
 
 
+def positive_physics_dt(value):
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("physics dt must be a finite, positive number of seconds")
+    return value
+
+
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Run the Agipix standalone simulation example.")
     parser.add_argument(
         "--namespace",
         default="drone",
         help="Base namespace prefix used for ROS topics and frame IDs.",
+    )
+    parser.add_argument(
+        "--physics-dt",
+        type=positive_physics_dt,
+        default=DEFAULT_PHYSICS_DT,
+        help="Physics timestep in seconds (default: 0.004, or 250 Hz).",
     )
     parser.add_argument(
         "--id",
@@ -301,9 +319,11 @@ def parse_cli_args():
 
 
 def main():
-    args = parse_cli_args()
     try:
-        app = AgipixApp(namespace=args.namespace, vehicle_id=args.vehicle_id)
+        args = parse_cli_args()
+        app = AgipixApp(
+            namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt
+        )
         app.run()
     finally:
         restore_thread_settings()

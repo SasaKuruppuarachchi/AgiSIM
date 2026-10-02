@@ -462,7 +462,7 @@ class ROS2Backend(Backend):
             if "frame_id" in data
             else data["lidar_name"]
         )
-        topic_name = data.get("topic_name", data["lidar_name"] + "/pointcloud")
+        topic_name = data.get("topic_name", data["lidar_name"] + "/lidar")
 
         # Create the writer for the lidar
         writer = rep.writers.get("RtxLidarROS2PublishPointCloud")
