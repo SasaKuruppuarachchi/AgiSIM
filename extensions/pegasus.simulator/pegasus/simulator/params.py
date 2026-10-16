@@ -62,6 +62,11 @@ FLAT_ENVIRONMENTS = {
     "Office": WORLDS_ASSETS + "/isaac_envs/office_flt.usd",
     "AKW": WORLDS_ASSETS + "/isaac_envs/akw_lvl1.usd",
     "AKW_C": WORLDS_ASSETS + "/isaac_envs/akw_lvl1_climb.usd",
+    "AKW_2F": WORLDS_ASSETS + "/isaac_envs/akw_2floor.usd",  # built by scripts/build_akw_2floor.py
+    "HV22_FOREST": WORLDS_ASSETS + "/isaac_envs/hv22_forest.usda",  # Gaussian splat: needs motion BVH off
+    # Finnish managed boreal stand (pine/spruce/birch, 100 x 100 m, spawn clearing at the origin),
+    # built by scripts/build_forest_fi.py; mesh trees, so RTX lidar works with motion BVH on
+    "FOREST_FI": WORLDS_ASSETS + "/isaac_envs/forest_fi.usd",
 }
 
 OMNIVERSE_ENVIRONMENTS = {

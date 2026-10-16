@@ -80,6 +80,7 @@ class ROS2Backend(Backend):
         # Save what whould be published/subscribed
         self._pub_graphical_sensors = config.get("pub_graphical_sensors", True)
         self._pub_lidar_laserscan = config.get("pub_lidar_laserscan", True)
+        self._pub_lidar_timestamps = config.get("pub_lidar_timestamps", False)
         self._pub_sensors = config.get("pub_sensors", True)
         self._pub_state = config.get("pub_state", True)
         self._sub_control = config.get("sub_control", True)
@@ -466,7 +467,11 @@ class ROS2Backend(Backend):
 
         # Create the writer for the lidar
         writer = rep.writers.get("RtxLidarROS2PublishPointCloud")
-        writer.initialize(nodeNamespace=self._namespace + str(self._id), topicName=topic_name, frameId=frame_id)
+        writer_options = dict(nodeNamespace=self._namespace + str(self._id),
+                              topicName=topic_name, frameId=frame_id)
+        if self._pub_lidar_timestamps:
+            writer_options["outputTimestamp"] = True
+        writer.initialize(**writer_options)
         writer.attach([render_prod_path])
 
         # Add the writer to the dictionary

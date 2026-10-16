@@ -1,15 +1,20 @@
 #!/usr/bin/env python
 
 import math
+import json
+import time
+import uuid
+from pegasus.simulator.logic.backends.tools.simulation_timestamp_policy import ros_time_parts
 import numpy as np
 from geometry_msgs.msg import TransformStamped, PoseStamped
 from tf2_ros import StaticTransformBroadcaster
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
+from nav_msgs.msg import Odometry
 from builtin_interfaces.msg import Time
-from std_msgs.msg import Float32, Float32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray, String
 from rosgraph_msgs.msg import Clock
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from pegasus.simulator.logic.state import State
 from rclpy.parameter import Parameter
@@ -39,6 +44,12 @@ class DroneLocationPublisher(Node):
         self.gt_publisher_ = self.create_publisher(
             PoseStamped, f"{self.vehicle_name}/gt_pose", qos_profile
         )
+        # Direct physics observation for the native GT authority. This is
+        # simulator State, never PX4 estimation or differentiated poses.
+        self.physics_gt_publisher_ = self.create_publisher(
+            Odometry, f"{self.vehicle_name}/physics_gt/odom", qos_profile_sensor_data
+        )
+        self._physics_gt_last_stamp_ns = -1
         self.rtf_publisher_ = self.create_publisher(Float32, "real_Time_factor", qos_profile)
         self.self_imu_publisher_ = self.create_publisher(
             Imu, f"{self.vehicle_name}/self_imu", qos_profile
@@ -50,6 +61,10 @@ class DroneLocationPublisher(Node):
             Float32MultiArray, f"{self.vehicle_name}/gt_forces", qos_profile
         )
         self.time_publisher = self.create_publisher(Clock, "clock", qos_profile)
+        self.timeline_publisher = self.create_publisher(String, "/agisim/timeline_state", 1)
+        self.timeline_session = uuid.uuid4().hex
+        self.timeline_sequence = 0
+        self.timeline_last_wall = 0.0
 
         self.lidar_trans = lidar_trans
         self.lidar_ori = lidar_ori
@@ -98,9 +113,25 @@ class DroneLocationPublisher(Node):
 
     def publish_clock(self, sim_time):
         time_msg = Clock()
-        time_msg.clock.sec = math.floor(sim_time)
-        time_msg.clock.nanosec = int((sim_time - time_msg.clock.sec) * 1e9)
+        time_msg.clock.sec, time_msg.clock.nanosec = ros_time_parts(sim_time)
         self.time_publisher.publish(time_msg)
+
+    def publish_timeline_state(self, timeline, sim_time):
+        # App updates continue while physics is paused. This is trusted timeline
+        # evidence, independent of /clock loss, and never publishes commands.
+        wall = time.monotonic()
+        state = "playing" if timeline.is_playing() else "stopped" if timeline.is_stopped() else "paused"
+        if state == getattr(self, "timeline_last_state", None) and wall - self.timeline_last_wall < 0.05:
+            return
+        self.timeline_last_wall = wall
+        self.timeline_last_state = state
+        self.timeline_sequence += 1
+        sec, ns = ros_time_parts(sim_time)
+        msg = String()
+        msg.data = json.dumps({"schema": "agisim.timeline.v1", "session": self.timeline_session,
+                               "sequence": self.timeline_sequence, "sim_ns": sec * 10**9 + ns,
+                               "state": state}, separators=(",", ":"))
+        self.timeline_publisher.publish(msg)
 
     def publish_self_imu(self, self_imu):
         if self_imu is None:
@@ -108,8 +139,7 @@ class DroneLocationPublisher(Node):
         msg = Imu()
         sim_time = self_imu.get("time", 0.0)
         sim_time_ = Time()
-        sim_time_.sec = math.floor(sim_time)
-        sim_time_.nanosec = int((sim_time - sim_time_.sec) * 1e9)
+        sim_time_.sec, sim_time_.nanosec = ros_time_parts(sim_time)
         msg.header.stamp = sim_time_
         msg.header.frame_id = f"{self.vehicle_name}/base_link"
 
@@ -134,8 +164,7 @@ class DroneLocationPublisher(Node):
     def publish_gt(self, state: State, sim_time):
         msg = PoseStamped()
         sim_time_ = Time()
-        sim_time_.sec = math.floor(sim_time)
-        sim_time_.nanosec = int((sim_time - sim_time_.sec) * 1e9)
+        sim_time_.sec, sim_time_.nanosec = ros_time_parts(sim_time)
         msg.header.stamp = sim_time_
         msg.header.frame_id = "vicon_map"
 
@@ -151,12 +180,48 @@ class DroneLocationPublisher(Node):
         msg.pose.orientation.w = float(orientation[3])
 
         self.gt_publisher_.publish(msg)
+        self.publish_physics_gt(state, sim_time)
+
+    def publish_physics_gt(self, state: State, sim_time):
+        """Publish original ENU pose and FLU body twist at the physics stamp."""
+        def finite_vector(values, size):
+            result = tuple(float(value) for value in values)
+            if len(result) != size or not all(math.isfinite(value) for value in result):
+                raise ValueError("Invalid original physics State")
+            return result
+
+        try:
+            position = finite_vector(state.position, 3)
+            orientation = finite_vector(state.attitude, 4)  # xyzw, body -> world
+            linear = finite_vector(state.linear_body_velocity, 3)
+            angular = finite_vector(state.angular_velocity, 3)
+            if abs(sum(value * value for value in orientation) - 1.0) > 1e-5:
+                return
+            sec, nanosec = ros_time_parts(sim_time)
+        except (TypeError, ValueError, OverflowError):
+            return  # Withhold invalid observations; never renew their lease.
+        stamp_ns = sec * 1_000_000_000 + nanosec
+        if stamp_ns <= self._physics_gt_last_stamp_ns:
+            return  # Clock rewind is visible on /clock; do not restamp State.
+
+        msg = Odometry()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = sec, nanosec
+        msg.header.frame_id = f"{self.vehicle_name}/world"
+        msg.child_frame_id = f"{self.vehicle_name}/base_link"
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        p.x, p.y, p.z = position
+        q.x, q.y, q.z, q.w = orientation
+        v, w = msg.twist.twist.linear, msg.twist.twist.angular
+        v.x, v.y, v.z = linear
+        w.x, w.y, w.z = angular
+        # ROS zero covariance convention; no calibrated uncertainty is claimed.
+        self.physics_gt_publisher_.publish(msg)
+        self._physics_gt_last_stamp_ns = stamp_ns
 
     def publish_gt_imu(self, sim_time, state: State):
         msg = Imu()
         sim_time_ = Time()
-        sim_time_.sec = math.floor(sim_time)
-        sim_time_.nanosec = int((sim_time - sim_time_.sec) * 1e9)
+        sim_time_.sec, sim_time_.nanosec = ros_time_parts(sim_time)
         msg.header.stamp = sim_time_
         msg.header.frame_id = f"{self.vehicle_name}/base_link"
 

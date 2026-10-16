@@ -15,9 +15,15 @@ from scipy.spatial.transform import Rotation
 
 
 # SimulationApp must be created immediately after import in Isaac Sim standalone scripts.
+_bootstrap_parser = argparse.ArgumentParser(add_help=False)
+_bootstrap_parser.add_argument("--headless", action="store_true")
+_bootstrap_parser.add_argument("--environment", default="AKW_C")
+_bootstrap_args, _ = _bootstrap_parser.parse_known_args()
+# Gaussian-splat environments are neither rendered nor seen by RTX lidar while motion BVH is on.
+SPLAT_ENVIRONMENTS = ("HV22_FOREST",)
 simulation_app = SimulationApp({
-    "headless": False,
-    "enable_motion_bvh": True,
+    "headless": _bootstrap_args.headless,
+    "enable_motion_bvh": _bootstrap_args.environment not in SPLAT_ENVIRONMENTS,
     "limit_cpu_threads": int(os.environ.get("AGIPIX_CPU_THREADS", "8")),
 })
 
@@ -72,12 +78,18 @@ DEFAULT_RENDER_HZ = 30.0
 
 
 class AgipixApp:
-    def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT):
+    def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
+                 lidar_timestamps=False, environment="AKW_C", px4_dir=None):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
         self.id = vehicle_id
         self.vehicle_name = f"{self.namespace}{self.id}"
+        self.lidar_timestamps = lidar_timestamps
+        if environment not in FLAT_ENVIRONMENTS:
+            raise ValueError("Unknown environment: " + environment)
+        self.environment = environment
+        self.px4_dir = px4_dir
 
         self.timeline = omni.timeline.get_timeline_interface()
         self.assets_root_path = nucleus.get_assets_root_path()
@@ -96,6 +108,7 @@ class AgipixApp:
         self.physics_stp_cnt = 0
         self.isaac_imu = None
         self._cb_physics = None
+        self._owned_backends = []
 
         self._setup_world()
         self._spawn_vehicle()
@@ -114,7 +127,10 @@ class AgipixApp:
             rendering_dt=1.0 / self.rendering_dt,
         )
         self.pg.initialize_world()
-        self.pg.load_environment(FLAT_ENVIRONMENTS["AKW_C"])
+        # Compose the scene before vehicle/RTX sensor creation. The asynchronous
+        # GUI loader can otherwise race sensor initialization in standalone runs.
+        self.pg.load_asset(FLAT_ENVIRONMENTS[self.environment], "/World/layout")
+        print("AGIPIX_ENVIRONMENT_LOADED=" + self.environment, flush=True)
 
     def _build_vehicle_config(self):
         config_multirotor = MultirotorConfig()
@@ -123,8 +139,10 @@ class AgipixApp:
             {
                 "vehicle_id": self.id,
                 "px4_autolaunch": True,
-                "px4_dir": self.pg.px4_path,
+                "px4_dir": self.px4_dir or self.pg.px4_path,
                 "px4_vehicle_model": self.pg.px4_default_airframe,
+                "simulation_time_provider": SimulationManager.get_simulation_time,
+                "simulation_fault_handler": self.stop_on_backend_fault,
             }
         )
 
@@ -137,11 +155,13 @@ class AgipixApp:
                     "pub_sensors": False,
                     "pub_graphical_sensors": True,
                     "pub_lidar_laserscan": False,
+                    "pub_lidar_timestamps": self.lidar_timestamps,
                     "pub_state": True,
                     "sub_control": False,
                 },
             ),
         ]
+        self._owned_backends = list(config_multirotor.backends)
 
         config_multirotor.graphical_sensors = [
             MonocularCamera(
@@ -170,6 +190,8 @@ class AgipixApp:
                     "frame_id": "lidar_link",
                     "show_render": False,
                     "frequency": 10,
+                    # Per-point time lives in basic GMO; FULL auxiliary channels are unnecessary.
+                    "aux_output_level": "NONE" if self.lidar_timestamps else None,
                 },
             ),
         ]
@@ -270,21 +292,42 @@ class AgipixApp:
         else:
             self.physics_stp_cnt += 1
 
+    def stop_on_backend_fault(self, reason):
+        self.stop_sim = True
+        self.timeline.pause()
+        carb.log_error('Stopping owned Agipix simulation: ' + reason)
+
     def run(self):
-        self.timeline.play()
-
-        while simulation_app.is_running() and not self.stop_sim:
-            simulation_app.update()
-
-        self.drone.stop()
-        if self._cb_physics is not None:
+        try:
+            self.timeline.play()
+            while simulation_app.is_running() and not self.stop_sim:
+                simulation_app.update()
+                self.node.publish_timeline_state(self.timeline, SimulationManager.get_simulation_time())
+        finally:
+            cleanup_errors = []
             try:
-                SimulationManager.deregister_callback(self._cb_physics)
-            except Exception:
-                pass
-        carb.log_warn("Agipix Simulation App is closing.")
-        self.timeline.stop()
-        restore_thread_settings()
+                self.timeline.stop()
+            except Exception as error:
+                cleanup_errors.append(error)
+            # Timeline callbacks may fail or be deferred. Explicitly close every
+            # owned backend independently before releasing vehicle physics views.
+            for backend in self._owned_backends:
+                try:
+                    backend.stop()
+                except Exception as error:
+                    cleanup_errors.append(error)
+            try:
+                self.drone.stop()
+            except Exception as error:
+                cleanup_errors.append(error)
+            if self._cb_physics is not None:
+                try:
+                    SimulationManager.deregister_callback(self._cb_physics)
+                except Exception as error:
+                    cleanup_errors.append(error)
+            carb.log_warn("Agipix Simulation App is closing.")
+            if cleanup_errors:
+                raise RuntimeError("Agipix cleanup failed") from cleanup_errors[0]
 
 
 def positive_physics_dt(value):
@@ -296,6 +339,12 @@ def positive_physics_dt(value):
 
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Run the Agipix standalone simulation example.")
+    parser.add_argument("--headless", action="store_true", help="Run without the Isaac Sim window.")
+    parser.add_argument("--environment", choices=tuple(FLAT_ENVIRONMENTS), default="AKW_C",
+                        help="Installed environment to load (default: AKW_C).")
+    parser.add_argument("--px4-dir", help="PX4 source/build directory (defaults to Pegasus configuration).")
+    parser.add_argument("--lidar-timestamps", action="store_true",
+                        help="Publish Isaac Sim 6 per-point timestamps; requires a timestamp-aware lidar parser.")
     parser.add_argument(
         "--namespace",
         default="drone",
@@ -322,12 +371,15 @@ def main():
     try:
         args = parse_cli_args()
         app = AgipixApp(
-            namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt
+            namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt,
+            lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir
         )
         app.run()
     finally:
-        restore_thread_settings()
-        simulation_app.close()
+        try:
+            restore_thread_settings()
+        finally:
+            simulation_app.close()
 
 
 if __name__ == "__main__":

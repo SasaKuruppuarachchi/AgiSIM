@@ -56,6 +56,12 @@ class MultirotorTensors:
         self.articulation.set_dof_velocity_targets(data, self.articulation_indices)
 
     def read_body_state(self):
+        """World position, attitude quaternion [qx, qy, qz, qw], linear and angular velocity.
+
+        All four come from the same PhysX step. The USD xform of the body is only
+        synchronised at render rate (30 Hz), so reading the attitude from USD holds it
+        for a render frame (4-37 ms stale) while position/velocities are current.
+        """
         transforms = self.body.get_transforms().numpy()
         velocities = self.body.get_velocities().numpy()
-        return transforms[0, :3], velocities[0, :3], velocities[0, 3:]
+        return transforms[0, :3], transforms[0, 3:7], velocities[0, :3], velocities[0, 3:]

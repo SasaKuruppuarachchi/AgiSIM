@@ -42,3 +42,9 @@ build/
 install/
 log/
 tests/
+# Local AI-agent process files and handoffs (not upstream)
+AGENTS.md
+CLAUDE.md
+.claude/
+AGENT_*.md
+*_HANDOFF.md

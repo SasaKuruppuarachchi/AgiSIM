@@ -12,7 +12,7 @@ from pegasus.simulator.logic.graphical_sensors import GraphicalSensor
 # Imports the python bindings to interact with lidar sensor
 import omni.usd
 import omni.kit.commands
-from pxr import Gf, UsdGeom
+from pxr import Gf, UsdGeom, Sdf
 from omni.usd import get_stage_next_free_path
 
 # Auxiliary scipy and numpy modules
@@ -54,6 +54,11 @@ class Lidar(GraphicalSensor):
         self._sensor_configuration = config.get("sensor_configuration", "Example_Rotary")
         self._show_render = config.get("show_render", False)
         self._frame_id = config.get("frame_id", "lidar_link")
+        # Isaac Sim 6 propagates auxiliary RTX metadata through this RenderVar.
+        # Leave existing profiles alone unless the caller explicitly requests it.
+        self._aux_output_level = config.get("aux_output_level", None)
+        if self._aux_output_level not in (None, "NONE", "BASIC", "EXTRA", "FULL"):
+            raise ValueError("Invalid lidar aux_output_level")
 
         self._sensor = None
 
@@ -83,6 +88,11 @@ class Lidar(GraphicalSensor):
             translation=(self._position[0], self._position[1], self._position[2]),
             orientation=Gf.Quatd(self._orientation[0], self._orientation[1], self._orientation[2], self._orientation[3])
         )
+        if self._aux_output_level is not None:
+            self._sensor.CreateAttribute(
+                "_replicator:rendervar:GenericModelOutput:channels",
+                Sdf.ValueTypeNames.StringArray, True,
+            ).Set([self._aux_output_level])
     
     def start(self):
 

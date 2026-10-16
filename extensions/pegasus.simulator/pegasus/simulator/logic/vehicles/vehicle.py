@@ -319,8 +319,11 @@ class Vehicle:
         if self._body_rigid_prim is None:
             return
 
+        attitude_xyzw = None
         if self._runtime_tensors is not None and self._runtime_tensors.valid:
-            pos, linear_vel, ang_vel_world = self._runtime_tensors.read_body_state()
+            # PhysX state of this step. The USD xform attitude is only synchronised at
+            # render rate and lagged the physics state by 4-37 ms (deskew_01).
+            pos, attitude_xyzw, linear_vel, ang_vel_world = self._runtime_tensors.read_body_state()
         else:
             positions, _ = self._body_rigid_prim.get_world_poses()
             linear_vels, angular_vels = self._body_rigid_prim.get_velocities()
@@ -328,11 +331,13 @@ class Vehicle:
             linear_vel = linear_vels.numpy()[0]
             ang_vel_world = angular_vels.numpy()[0]
 
-        # Get the attitude via the USD rotation (more accurate for orientation)
-        prim = self._current_stage.GetPrimAtPath(self._stage_prefix + "/body")
-        rotation_quat = get_world_transform_xform(prim).GetQuaternion()
-        rotation_quat_real = rotation_quat.GetReal()
-        rotation_quat_img = rotation_quat.GetImaginary()
+        if attitude_xyzw is None:
+            # Prim-wrapper fallback: attitude via the USD rotation (render-rate synchronised).
+            prim = self._current_stage.GetPrimAtPath(self._stage_prefix + "/body")
+            rotation_quat = get_world_transform_xform(prim).GetQuaternion()
+            rotation_quat_img = rotation_quat.GetImaginary()
+            attitude_xyzw = np.array([rotation_quat_img[0], rotation_quat_img[1], rotation_quat_img[2],
+                                      rotation_quat.GetReal()])
 
         # Convert warp float32 outputs to float64 so ROS 2 message fields pass PyFloat_Check
         pos = pos.astype(np.float64)
@@ -346,9 +351,8 @@ class Vehicle:
         self._state.position = np.array(pos)
 
         # Get the quaternion in the [qx, qy, qz, qw] standard
-        self._state.attitude = np.array(
-            [rotation_quat_img[0], rotation_quat_img[1], rotation_quat_img[2], rotation_quat_real]
-        )
+        attitude_xyzw = np.asarray(attitude_xyzw, dtype=np.float64)
+        self._state.attitude = attitude_xyzw / np.linalg.norm(attitude_xyzw)
 
         # Express the velocity of the vehicle in the inertial frame X_dot = [x_dot, y_dot, z_dot]
         self._state.linear_velocity = np.array(linear_vel)

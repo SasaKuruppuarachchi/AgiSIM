@@ -15,6 +15,7 @@ from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.backends.backend import Backend, BackendConfig
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 from pegasus.simulator.logic.backends.tools.px4_launch_tool import PX4LaunchTool
+from pegasus.simulator.logic.backends.tools.simulation_sensor_clock import SimulationSensorClock
 
 
 class SensorSource:
@@ -234,6 +235,8 @@ class PX4MavlinkBackendConfig(BackendConfig):
         # The update rate at which we will be sending data to mavlink (TODO - remove this from here in the future
         # and infer directly from the function calls)
         self.update_rate: float = self.config.get("update_rate", 250.0)  # [Hz]
+        self.simulation_time_provider = self.config.get("simulation_time_provider", None)
+        self.simulation_fault_handler = self.config.get("simulation_fault_handler", None)
 
 
 class PX4MavlinkBackend(Backend):
@@ -256,6 +259,15 @@ class PX4MavlinkBackend(Backend):
         self.config: PX4MavlinkBackendConfig = config
         self._vehicle_id = self.config.vehicle_id
         self._connection = None
+        self._sensor_clock = (SimulationSensorClock(config.simulation_time_provider)
+                              if config.simulation_time_provider is not None else None)
+        if self._sensor_clock is not None and not config.px4_autolaunch:
+            raise ValueError("Shared simulation clock requires an owned PX4 session (px4_autolaunch=True)")
+        self._reported_clock_fault = False
+        self._imu_wait_started = None
+        self._simulation_fault_handler = config.simulation_fault_handler
+        if self._simulation_fault_handler is not None and not callable(self._simulation_fault_handler):
+            raise ValueError('simulation_fault_handler must be callable')
         self._connection_port = (
             self.config.connection_type
             + ":"
@@ -504,6 +516,10 @@ class PX4MavlinkBackend(Backend):
             self.re_initialize_interface()
 
         # Set the flag to signal that the mavlink transmission has started
+        if self._sensor_clock is not None:
+            self._sensor_clock.reset()
+            self._reported_clock_fault = False
+            self._imu_wait_started = None
         self._is_running = True
 
         # Launch the PX4 in the background if needed
@@ -518,21 +534,23 @@ class PX4MavlinkBackend(Backend):
         """
 
         # If the simulation was already stoped, then ignore the function call
-        if self._is_running == False:
+        if not self._is_running and self._connection is None and self.px4_tool is None:
             return
 
         # Set the flag so that we are no longer running the mavlink interface
         self._is_running = False
 
         # Close the mavlink connection
-        self._connection.close()
-        self._connection = None
-
-        # Close the PX4 if it was running
-        if self.px4_autolaunch and self.px4_autolaunch is not None:
-            carb.log_info("Attempting to kill PX4 background process")
-            self.px4_tool.kill_px4()
-            self.px4_tool = None
+        try:
+            if self._connection is not None:
+                self._connection.close()
+        finally:
+            self._connection = None
+            # This is the exact owned Popen child, never an external PX4 instance.
+            if self.px4_autolaunch and self.px4_tool is not None:
+                carb.log_info("Stopping owned PX4 background process")
+                self.px4_tool.kill_px4()
+                self.px4_tool = None
 
     def reset(self):
         """For now does nothing. Here for compatibility purposes only
@@ -591,12 +609,32 @@ class PX4MavlinkBackend(Backend):
             self.wait_for_first_hearbeat()
             return
 
-        # Check if we have already received IMU data. If not, start the lockstep and wait for more data
-        if self._sensor_data.received_first_imu:
-            while not self._sensor_data.new_imu_data and self._is_running:
-                # Just go for the next update and then try to check if we have new simulated sensor data
-                # DO not continue and get mavlink thrusters commands until we have simulated IMU data available
+        # A missing IMU must not bypass both clock validation and transport
+        # supervision forever. This watchdog applies only to owned-clock runs.
+        if self._sensor_clock is not None:
+            if self._sensor_data.new_imu_data:
+                self._imu_wait_started = None
+            else:
+                if self._imu_wait_started is None:
+                    self._imu_wait_started = time.monotonic()
+                elif time.monotonic()-self._imu_wait_started >= 2.0:
+                    self._raise_simulation_fault('Simulation IMU stalled; stopping owned simulation')
+
+        # Validate the shared clock before potentially blocking on lockstep.
+        sensor_time = None
+        if self._sensor_clock is not None:
+            sensor_time = self._sensor_clock.timestamp_us()
+            if sensor_time is None:
+                if self._sensor_clock.fault and not self._reported_clock_fault:
+                    carb.log_error(self._sensor_clock.fault)
+                    self._reported_clock_fault = True
+                    # Propagate to the application's owned-backend cleanup. A
+                    # stopped HIL stream alone leaves the last rotor command live.
+                    self._raise_simulation_fault(self._sensor_clock.fault)
                 return
+
+        if self._sensor_data.received_first_imu and not self._sensor_data.new_imu_data and self._is_running:
+            return
 
         # Check if we have received any mavlink messages
         self.poll_mavlink_messages()
@@ -607,7 +645,10 @@ class PX4MavlinkBackend(Backend):
             self._last_heartbeat_sent_time = time.time()
 
         # Update the current u_time for px4
-        self._current_utime += int(dt * 1000000)
+        if self._sensor_clock is None:
+            self._current_utime += int(dt * 1000000)
+        else:
+            self._current_utime = sensor_time
 
         # Send sensor messages
         self.send_sensor_msgs(self._current_utime)
@@ -630,11 +671,22 @@ class PX4MavlinkBackend(Backend):
         # Start by assuming that we have not received data for the actuators for the current step
         self._received_actuator = False
 
+        # Shared-clock sessions are owned by the application. Bound lockstep
+        # transport loss so its finally block can stop physics and reap PX4.
+        deadline = (time.monotonic() + 2.0
+                    if needs_to_wait_for_actuator and self._sensor_clock is not None else None)
+
         # Use this loop to emulate a do-while loop (make sure this runs at least once)
         while True:
 
             # Try to get a message
-            msg = self._connection.recv_match(blocking=needs_to_wait_for_actuator)
+            if deadline is None:
+                msg = self._connection.recv_match(blocking=needs_to_wait_for_actuator)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._raise_simulation_fault('PX4 lockstep actuator transport timed out; stopping owned simulation')
+                msg = self._connection.recv_match(blocking=True, timeout=min(0.1, remaining))
 
             # If a message was received
             if msg is not None:
@@ -652,6 +704,14 @@ class PX4MavlinkBackend(Backend):
             # If so, break out of the infinite loop
             if not needs_to_wait_for_actuator or self._received_actuator:
                 break
+
+    def _raise_simulation_fault(self, reason):
+        self._rotor_data.zero_input_reference()
+        # Kit may catch exceptions from physics callbacks. Notify the owning
+        # run loop explicitly so cleanup does not depend on propagation.
+        if self._simulation_fault_handler is not None:
+            self._simulation_fault_handler(reason)
+        raise RuntimeError(reason)
 
     def send_heartbeat(self, mav_type=mavutil.mavlink.MAV_TYPE_GENERIC):
         """

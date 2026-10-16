@@ -22,6 +22,8 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -p, --path PATH    Path to Isaac Sim installation (default: ${DEFAULT_ISAACSIM_PATH})"
+    echo "  --skip-assets     Reuse an existing ISAACSIM_ASSET_ROOT without asset setup/download"
+    echo "  --skip-alias      Leave the shell launcher configuration unchanged"
     echo "  -h, --help         Show this help message"
     echo ""
     echo "Environment Variables:"
@@ -33,6 +35,8 @@ show_help() {
 # Parse Arguments
 # ---------------------------------------------------------
 INPUT_PATH=""
+SKIP_ASSET_SETUP=false
+SKIP_ALIAS_SETUP=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
@@ -42,6 +46,14 @@ while [[ $# -gt 0 ]]; do
         -p|--path)
             INPUT_PATH="$2"
             shift 2
+            ;;
+        --skip-assets)
+            SKIP_ASSET_SETUP=true
+            shift
+            ;;
+        --skip-alias)
+            SKIP_ALIAS_SETUP=true
+            shift
             ;;
         *)
             if [ -z "$INPUT_PATH" ]; then
@@ -98,7 +110,13 @@ export ISAACSIM_ASSET_ROOT
 GET_ASSETS_SCRIPT="${SCRIPT_DIR}/get_isaac_assets.sh"
 
 echo -e "${C_CYAN}${C_BOLD}[Step 1/4] Running Isaac Sim assets setup...${C_RESET}"
-if [ -f "$GET_ASSETS_SCRIPT" ]; then
+if [ "$SKIP_ASSET_SETUP" = true ]; then
+    if [ ! -d "$ISAACSIM_ASSET_ROOT" ]; then
+        echo -e "${C_RED}[ERROR] Existing asset root not found: ${ISAACSIM_ASSET_ROOT}${C_RESET}"
+        exit 1
+    fi
+    echo -e "${C_GREEN}[SKIP] Reusing existing asset root:${C_RESET} ${ISAACSIM_ASSET_ROOT}"
+elif [ -f "$GET_ASSETS_SCRIPT" ]; then
     chmod +x "$GET_ASSETS_SCRIPT"
     bash "$GET_ASSETS_SCRIPT"
 else
@@ -121,7 +139,11 @@ if [ ! -f "$SRC_MID360" ]; then
 fi
 
 mkdir -p "$DEST_DIR"
-cp -v "$SRC_MID360" "$DEST_MID360"
+if [ -f "$DEST_MID360" ] && cmp -s "$SRC_MID360" "$DEST_MID360"; then
+    echo -e "${C_GREEN}[SKIP] Mid_360.usda already matches:${C_RESET} ${DEST_MID360}"
+else
+    cp -v "$SRC_MID360" "$DEST_MID360"
+fi
 echo -e "${C_GREEN}[OK] Successfully copied Mid_360.usda to:${C_RESET} ${DEST_MID360}"
 
 # ---------------------------------------------------------
@@ -214,6 +236,12 @@ fi
 # ---------------------------------------------------------
 echo -e "\n${C_CYAN}${C_BOLD}[Step 4/4] Configuring 'agisim' alias in ~/.bashrc...${C_RESET}"
 
+if [ "$SKIP_ALIAS_SETUP" = true ]; then
+    echo -e "${C_GREEN}[SKIP] Shell launcher configuration retained.${C_RESET}"
+    echo -e "\n${C_BOLD}${C_GREEN}✔ Isaac Sim runtime customization completed successfully.${C_RESET}"
+    exit 0
+fi
+
 RUN_SIM_SCRIPT="${SCRIPT_DIR}/run_sim.sh"
 if [ -f "$RUN_SIM_SCRIPT" ]; then
     chmod +x "$RUN_SIM_SCRIPT"
@@ -241,5 +269,4 @@ fi
 # Add remaining customization steps below as needed
 
 echo -e "\n${C_BOLD}${C_GREEN}✔ Isaac Sim setup completed successfully.${C_RESET}"
-
 

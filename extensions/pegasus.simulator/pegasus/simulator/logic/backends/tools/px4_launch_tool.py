@@ -9,6 +9,9 @@
 import os
 import tempfile
 import subprocess
+import json
+import uuid
+from pathlib import Path
 
 
 class PX4LaunchTool:
@@ -48,6 +51,23 @@ class PX4LaunchTool:
         """
         Method that will launch a px4 instance with the specified configuration
         """
+        registry = self.environment.get("AGIPIX_OWNED_SITL_REGISTRY")
+        if registry:
+            # Record intent BEFORE spawning: a native crash can interrupt the
+            # post-spawn registry write. Recovery also requires adopted-child
+            # ownership, executable and this unique working directory.
+            launcher = Path('/proc') / str(os.getpid())
+            fields = (launcher / 'stat').read_text().rsplit(')', 1)[1].split()
+            intent = {'launcher_pid': os.getpid(), 'launcher_start_ticks': int(fields[19]),
+                      'executable': str(Path(self.px4_dir + '/build/px4_sitl_default/bin/px4').resolve(strict=True)),
+                      'cwd': str(Path(self.root_fs.name).resolve(strict=True))}
+            destination = Path(registry) / (uuid.uuid4().hex + '.intent')
+            temporary = destination.with_suffix('.intent_pending')
+            with temporary.open('x') as stream:
+                json.dump(intent, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.rename(destination)
         self.px4_process = subprocess.Popen(
             [
                 self.px4_dir + "/build/px4_sitl_default/bin/px4",
@@ -62,13 +82,39 @@ class PX4LaunchTool:
             shell=False,
             env=self.environment,
         )
+        if registry:
+            try:
+                proc = Path("/proc") / str(self.px4_process.pid)
+                fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+                identity = {"pid": self.px4_process.pid, "start_ticks": int(fields[19]),
+                            "executable": str((proc / "exe").resolve(strict=True))}
+                destination = Path(registry) / (str(self.px4_process.pid) + ".json")
+                # Private supervisor-created directory; publish atomically before simulation advances.
+                temporary = destination.with_suffix(".pending")
+                with temporary.open("x") as stream:
+                    json.dump(identity, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.rename(destination)
+            except BaseException:
+                self.kill_px4()
+                raise
 
     def kill_px4(self):
         """
         Method that will kill a px4 instance with the specified configuration
         """
         if self.px4_process is not None:
-            self.px4_process.kill()
+            process = self.px4_process
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3.0)
+            else:
+                process.wait()
             self.px4_process = None
 
     def __del__(self):

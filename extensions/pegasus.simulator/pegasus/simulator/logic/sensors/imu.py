@@ -31,12 +31,14 @@ class IMU(Sensor):
             >>>        "noise_density": 2.0 * 35.0 / 3600.0 / 180.0 * pi,
             >>>        "random_walk": 2.0 * 4.0 / 3600.0 / 180.0 * pi,
             >>>        "bias_correlation_time": 1.0e3,
-            >>>        "turn_on_bias_sigma": 0.5 / 180.0 * pi},
+            >>>        "turn_on_bias_sigma": 0.5 / 180.0 * pi,
+            >>>        "range": radians(2000.0) * 32767 / 32768},     # rad/s full scale (PX4 SITL FIFO gyro)
             >>>  "accelerometer": {
             >>>         "noise_density": 2.0 * 2.0e-3,
             >>>         "random_walk": 2.0 * 3.0e-3,
             >>>         "bias_correlation_time": 300.0,
-            >>>         "turn_on_bias_sigma": 20.0e-3 * 9.8
+            >>>         "turn_on_bias_sigma": 20.0e-3 * 9.8,
+            >>>         "range": 16.0 * 9.80665 * 32767 / 32768      # m/s^2 full scale (PX4 SITL FIFO accel)
             >>> },
             >>>  "update_rate": 1.0}                 # Hz
         """
@@ -66,12 +68,46 @@ class IMU(Sensor):
         # Auxiliar variable used to compute the linear acceleration of the vehicle
         self._prev_linear_velocity = np.zeros((3,))
 
+        # Full-scale range per sensor axis. Defaults are the PX4 SITL simulated FIFO devices (16 g at 2048 LSB/g and
+        # 2000 deg/s at 16.384 LSB/(deg/s), stored as int16 by SimulatorMavlink). Exceeding them does not clip in
+        # PX4: the float->int16 conversion wraps, so a rigid PhysX touchdown (single-step |a| > 16 g) arrived with
+        # the wrong sign. Kept one LSB inside the range so PX4 still flags the sample as clipped.
+        self._accelerometer_range = accelerometer_config.get("range", 16.0 * 9.80665 * 32767.0 / 32768.0)
+        self._gyroscope_range = gyroscope_config.get("range", np.radians(2000.0) * 32767.0 / 32768.0)
+
+        # Velocity (m/s) and angle (rad) increments clipped by the range and not yet reported
+        self._accelerometer_overrange = np.zeros((3,))
+        self._gyroscope_overrange = np.zeros((3,))
+
         # Save the current state measured by the IMU
         self._state = {
             "orientation": np.array([1.0, 0.0, 0.0, 0.0]),
             "angular_velocity": np.array([0.0, 0.0, 0.0]),
             "linear_acceleration": np.array([0.0, 0.0, 0.0]),
         }
+
+    @staticmethod
+    def _saturate_preserving_increment(value, pending, full_scale, dt):
+        """Clamp a rate-type measurement to +/- full_scale and report the clipped increment (value * dt) in the
+        following samples, so the integral of the output (delta velocity / delta angle) matches the true one.
+        Below full scale with nothing pending the value is returned unchanged.
+
+        Args:
+            value (np.ndarray): The measurement for this sample.
+            pending (np.ndarray): Increment clipped in earlier samples and not yet reported.
+            full_scale (float): The per-axis range; None or <= 0 disables saturation.
+            dt (float): The sample interval (s).
+
+        Returns:
+            (np.ndarray, np.ndarray): The saturated measurement and the remaining pending increment.
+        """
+        if full_scale is None or full_scale <= 0.0 or dt <= 0.0:
+            return value, pending
+        demanded = value + pending / dt
+        output = np.clip(demanded, -full_scale, full_scale)
+        # Bound the backlog (0.1 s at full scale) so a sustained over-range cannot grow it without limit
+        pending = np.clip((demanded - output) * dt, -0.1 * full_scale, 0.1 * full_scale)
+        return output, pending
 
     @property
     def state(self):
@@ -163,6 +199,12 @@ class IMU(Sensor):
 
         # Convert the linear acceleration in the body frame from FLU to FRD standard
         linear_acceleration_frd = rot_FLU_to_FRD.apply(linear_acceleration)
+
+        # Keep the output inside the sensor range without losing the impulse
+        linear_acceleration_frd, self._accelerometer_overrange = self._saturate_preserving_increment(
+            linear_acceleration_frd, self._accelerometer_overrange, self._accelerometer_range, dt)
+        angular_velocity_frd, self._gyroscope_overrange = self._saturate_preserving_increment(
+            angular_velocity_frd, self._gyroscope_overrange, self._gyroscope_range, dt)
 
         # Add the values to the dictionary and return it
         self._state = {
