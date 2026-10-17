@@ -123,6 +123,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
+    parser.add_argument("--splat-mode", action="store_true",
+                        help="Replace RealSense with four setting-H fisheyes and a stitched 10 Hz panorama preview.")
+    parser.add_argument("--save-splat", action="store_true",
+                        help="Write the full-resolution splat dataset to disk (default: off; requires --splat-mode).")
+    parser.add_argument("--splat-depth", action="store_true",
+                        help="Also save float32 optical-axis depth in metres (.npy); requires --save-splat.")
+    parser.add_argument("--splat-out", type=Path,
+                        help="New dataset directory; requires --save-splat "
+                             "(default: ~/agipix_splat/<environment>_<timestamp>).")
     parser.add_argument("--namespace", default="drone", help="Vehicle namespace prefix (default: drone).")
     parser.add_argument("--id", dest="vehicle_id", type=_nonnegative_id, default=0,
                         help="Vehicle ID appended to namespace (default: 0).")
@@ -162,6 +171,14 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
         argv.append("--no-chase-cam")
     if args.lidar_timestamps:
         argv.append("--lidar-timestamps")
+    if args.splat_mode:
+        argv.append("--splat-mode")
+        if args.save_splat:
+            argv.append("--save-splat")
+        if args.splat_depth:
+            argv.append("--splat-depth")
+        if args.splat_out is not None:
+            argv.extend(["--splat-out", str(args.splat_out.expanduser().resolve())])
     # Match the successful Flight 26 Isaac renderer/asset-root settings.
     argv.extend([
         "--/renderer/multiGpu/enabled=false",
@@ -219,6 +236,10 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
         "px4_defaults": PX4_DEFAULTS,
         "kit_args": canonical_args[canonical_args.index("--/renderer/multiGpu/enabled=false"):],
     }
+    if args.splat_mode:
+        info.update(splat_mode=True, save_splat=args.save_splat, splat_depth=args.splat_depth,
+                    splat_out=(str(args.splat_out.expanduser().resolve()) if args.splat_out is not None
+                               else f"~/agipix_splat/{args.environment}_<timestamp>") if args.save_splat else None)
     return argv, env, info
 
 
@@ -242,6 +263,10 @@ def _preflight_errors(info: dict[str, object]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args, passthrough = parser.parse_known_args(argv)
+    if not args.splat_mode and (args.save_splat or args.splat_depth or args.splat_out is not None):
+        parser.error("--save-splat, --splat-depth and --splat-out require --splat-mode")
+    if not args.save_splat and (args.splat_depth or args.splat_out is not None):
+        parser.error("--splat-depth and --splat-out require --save-splat")
     if not args.namespace.strip():
         parser.error("--namespace must not be empty")
     command, env, info = _launch_plan(args, passthrough)

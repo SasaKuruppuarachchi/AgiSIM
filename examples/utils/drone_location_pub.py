@@ -77,6 +77,40 @@ class DroneLocationPublisher(Node):
             lidar_frame_broadcaster,
         )
 
+    def enable_splat_preview(self):
+        """Opt-in preview only; existing publishers and mode-off topics are unchanged."""
+        from sensor_msgs.msg import CompressedImage, Image
+        from agipix_splat_preview import encode_preview_jpeg
+
+        self._splat_image_type = Image
+        self._splat_compressed_image_type = CompressedImage
+        self._encode_splat_jpeg = encode_preview_jpeg
+        self._splat_preview_publisher = self.create_publisher(
+            Image, f"{self.vehicle_name}/splat/preview", qos_profile_sensor_data
+        )
+        self._splat_preview_compressed_publisher = self.create_publisher(
+            CompressedImage, f"{self.vehicle_name}/splat/preview/compressed", qos_profile_sensor_data
+        )
+
+    def publish_splat_preview(self, rgb, timestamp_ns):
+        msg = self._splat_image_type()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(int(timestamp_ns), 10**9)
+        msg.header.frame_id = f"{self.vehicle_name}/splat_panorama"
+        msg.height, msg.width = rgb.shape[:2]
+        msg.encoding = "rgb8"
+        msg.is_bigendian = False
+        msg.step = msg.width * 3
+        msg.data = rgb.tobytes()
+        self._splat_preview_publisher.publish(msg)
+        # The bridge subscribes when a Foxglove panel selects this topic. Avoid
+        # JPEG work when no compressed-image consumer is connected.
+        if self._splat_preview_compressed_publisher.get_subscription_count() > 0:
+            compressed = self._splat_compressed_image_type()
+            compressed.header = msg.header
+            compressed.format = "rgb8; jpeg compressed bgr8"
+            compressed.data = self._encode_splat_jpeg(rgb)
+            self._splat_preview_compressed_publisher.publish(compressed)
+
     def publish_static_transform(
         self, ch_frame, pr_frame, translation_xyz, orient_wxyz, broadcaster
     ):

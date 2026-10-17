@@ -6,6 +6,7 @@ Agipix PX4 + ROS2 standalone example for Isaac Sim 6.0.
 import argparse
 import math
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -18,6 +19,7 @@ from scipy.spatial.transform import Rotation
 _bootstrap_parser = argparse.ArgumentParser(add_help=False)
 _bootstrap_parser.add_argument("--headless", action="store_true")
 _bootstrap_parser.add_argument("--environment", default="AKW_C")
+_bootstrap_parser.add_argument("--splat-mode", action="store_true")
 _bootstrap_args, _ = _bootstrap_parser.parse_known_args()
 # Gaussian-splat environments are neither rendered nor seen by RTX lidar while motion BVH is on.
 SPLAT_ENVIRONMENTS = ("HV22_FOREST",)
@@ -25,6 +27,8 @@ simulation_app = SimulationApp({
     "headless": _bootstrap_args.headless,
     "enable_motion_bvh": _bootstrap_args.environment not in SPLAT_ENVIRONMENTS,
     "limit_cpu_threads": int(os.environ.get("AGIPIX_CPU_THREADS", "8")),
+    # Spatial FXAA avoids temporal DLSS trails in moving calibration/dataset images.
+    **({"anti_aliasing": 2} if _bootstrap_args.splat_mode else {}),
 })
 
 
@@ -33,6 +37,8 @@ import carb
 # A single CPU-physics vehicle runs faster without PhysX worker dispatch.
 # Restore the persistent preference before application shutdown.
 _thread_settings = carb.settings.get_settings()
+if _bootstrap_args.splat_mode:
+    _thread_settings.set_bool("/rtx/post/motionblur/enabled", False)
 _previous_physics_threads = _thread_settings.get("/persistent/physics/numThreads")
 _thread_settings.set_int(
     "/persistent/physics/numThreads", int(os.environ.get("AGIPIX_PHYSICS_THREADS", "0"))
@@ -80,7 +86,8 @@ DEFAULT_RENDER_HZ = 30.0
 class AgipixApp:
     def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
                  lidar_timestamps=False, environment="AKW_C", px4_dir=None,
-                 gui=False, chase_cam=True):
+                 gui=False, chase_cam=True, splat_mode=False, splat_depth=False, splat_out=None,
+                 save_splat=False):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
@@ -93,6 +100,12 @@ class AgipixApp:
         self.px4_dir = px4_dir
         self.gui = gui
         self._chase_camera = None
+        self.splat_mode = splat_mode
+        self._splat_recorder = None
+        if not splat_mode and (save_splat or splat_depth or splat_out is not None):
+            raise ValueError("save_splat, splat_depth and splat_out require splat_mode")
+        if not save_splat and (splat_depth or splat_out is not None):
+            raise ValueError("splat_depth and splat_out require save_splat")
 
         self.timeline = omni.timeline.get_timeline_interface()
         self.assets_root_path = nucleus.get_assets_root_path()
@@ -116,6 +129,13 @@ class AgipixApp:
         self._setup_world()
         self._spawn_vehicle()
         self._setup_publishers_and_sensors()
+        if self.splat_mode:
+            from agipix_splat_camera import SplatRecorder
+
+            self.node.enable_splat_preview()
+            self._splat_recorder = SplatRecorder(
+                self._splat_cameras, self.node, self.environment, splat_out, splat_depth, save=save_splat
+            )
         if self.gui and chase_cam:
             from agipix_chase_camera import ChaseCamera, settings_for_environment
 
@@ -173,7 +193,12 @@ class AgipixApp:
         ]
         self._owned_backends = list(config_multirotor.backends)
 
-        config_multirotor.graphical_sensors = [
+        if self.splat_mode:
+            from agipix_splat_camera import SplatCamera
+            from agipix_splat_geometry import MOUNTS
+
+            self._splat_cameras = [SplatCamera(mount) for mount in MOUNTS]
+        config_multirotor.graphical_sensors = list(self._splat_cameras) if self.splat_mode else [
             MonocularCamera(
                 "RealSense_Camera",
                 config={
@@ -191,6 +216,8 @@ class AgipixApp:
                     "frequency": 30,
                 },
             ),
+        ]
+        config_multirotor.graphical_sensors += [
             Lidar(
                 "livox",
                 config={
@@ -310,7 +337,15 @@ class AgipixApp:
     def run(self):
         try:
             self.timeline.play()
-            if self._chase_camera is None:
+            if self._splat_recorder is not None:
+                while simulation_app.is_running() and not self.stop_sim:
+                    simulation_app.update()
+                    self._splat_recorder.poll()
+                    sim_time = SimulationManager.get_simulation_time()
+                    if self._chase_camera is not None:
+                        self._chase_camera.update(self.drone._state.position, sim_time)
+                    self.node.publish_timeline_state(self.timeline, sim_time)
+            elif self._chase_camera is None:
                 # Preserve the headless loop: no camera import, prim or per-step work.
                 while simulation_app.is_running() and not self.stop_sim:
                     simulation_app.update()
@@ -323,6 +358,11 @@ class AgipixApp:
                     self.node.publish_timeline_state(self.timeline, sim_time)
         finally:
             cleanup_errors = []
+            if self._splat_recorder is not None:
+                try:
+                    self._splat_recorder.close()
+                except Exception as error:
+                    cleanup_errors.append(error)
             try:
                 self.timeline.stop()
             except Exception as error:
@@ -361,6 +401,15 @@ def parse_cli_args():
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
+    parser.add_argument("--splat-mode", action="store_true",
+                        help="Replace RealSense with four setting-H fisheyes and a stitched 10 Hz panorama preview.")
+    parser.add_argument("--save-splat", action="store_true",
+                        help="Write the full-resolution splat dataset to disk (default: off; requires --splat-mode).")
+    parser.add_argument("--splat-depth", action="store_true",
+                        help="Also save float32 optical-axis depth in metres (.npy); requires --save-splat.")
+    parser.add_argument("--splat-out", type=Path,
+                        help="New dataset directory; requires --save-splat "
+                             "(default: ~/agipix_splat/<environment>_<timestamp>).")
     parser.add_argument("--environment", choices=tuple(FLAT_ENVIRONMENTS), default="AKW_C",
                         help="Installed environment to load (default: AKW_C).")
     parser.add_argument("--px4-dir", help="PX4 source/build directory (defaults to Pegasus configuration).")
@@ -385,6 +434,10 @@ def parse_cli_args():
         help="Vehicle identifier appended to the namespace.",
     )
     args, _ = parser.parse_known_args()
+    if not args.splat_mode and (args.save_splat or args.splat_depth or args.splat_out is not None):
+        parser.error("--save-splat, --splat-depth and --splat-out require --splat-mode")
+    if not args.save_splat and (args.splat_depth or args.splat_out is not None):
+        parser.error("--splat-depth and --splat-out require --save-splat")
     return args
 
 
@@ -395,13 +448,21 @@ def main():
             namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt,
             lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
             gui=not args.headless, chase_cam=args.chase_cam,
+            splat_mode=args.splat_mode, splat_depth=args.splat_depth, splat_out=args.splat_out,
+            save_splat=args.save_splat,
         )
         app.run()
     finally:
         try:
             restore_thread_settings()
         finally:
-            simulation_app.close()
+            if _bootstrap_args.splat_mode and sys.exc_info()[0] is not None:
+                # SimulationApp closes the process; preserve capture/disk failures.
+                import traceback
+                traceback.print_exc()
+                simulation_app.close(exit_code=1)
+            else:
+                simulation_app.close()
 
 
 if __name__ == "__main__":

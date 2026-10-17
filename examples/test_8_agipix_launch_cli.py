@@ -26,7 +26,7 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in ("--headless", "--gui", "--namespace", "--id", "--environment",
                        "--px4-dir", "--physics-dt", "--preflight", "--print-command",
-                       "--chase-cam", "--no-chase-cam"):
+                       "--chase-cam", "--no-chase-cam", "--splat-mode", "--save-splat", "--splat-depth", "--splat-out"):
             self.assertIn(option, result.stdout)
         self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
@@ -81,6 +81,61 @@ class HospitalFlight25CliTest(unittest.TestCase):
                 self.assertEqual(plan["chase_cam"], enabled)
                 self.assertEqual("--headless" in command, headless)
                 self.assertEqual("--no-chase-cam" in command, disabled_flag)
+
+    def test_splat_mode_defaults_off_and_does_not_change_the_command(self) -> None:
+        result = self.run_cli("--print-command")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("splat", result.stdout)
+
+    def test_splat_options_reach_the_canonical_script_without_starting_isaac(self) -> None:
+        result = self.run_cli("--splat-mode", "--save-splat", "--splat-depth", "--splat-out", "/tmp/splat data",
+                              "--environment", "FOREST_FI", "--print-command")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+        plan = json.loads(plan_text)
+        command = shlex.split(command_text.splitlines()[0])
+        self.assertTrue(plan["splat_mode"])
+        self.assertTrue(plan["save_splat"])
+        self.assertTrue(plan["splat_depth"])
+        self.assertEqual(plan["splat_out"], "/tmp/splat data")
+        self.assertIn("--splat-mode", command)
+        self.assertIn("--save-splat", command)
+        self.assertIn("--splat-depth", command)
+        self.assertEqual(command[command.index("--splat-out") + 1], "/tmp/splat data")
+        self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
+
+    def test_splat_preview_defaults_to_no_dataset(self) -> None:
+        result = self.run_cli("--splat-mode", "--print-command")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+        plan = json.loads(plan_text)
+        command = shlex.split(command_text.splitlines()[0])
+        self.assertFalse(plan["save_splat"])
+        self.assertFalse(plan["splat_depth"])
+        self.assertIsNone(plan["splat_out"])
+        self.assertNotIn("--save-splat", command)
+        self.assertNotIn("--splat-out", command)
+
+    def test_splat_saved_default_directory_and_depth(self) -> None:
+        result = self.run_cli("--splat-mode", "--save-splat", "--preflight")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertFalse(plan["splat_depth"])
+        self.assertEqual(plan["splat_out"], "~/agipix_splat/AKW_C_<timestamp>")
+
+    def test_splat_dependent_options_require_the_mode(self) -> None:
+        for options in (("--save-splat",), ("--splat-depth",), ("--splat-out", "/tmp/data")):
+            with self.subTest(options=options):
+                result = self.run_cli(*options, "--preflight")
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("require --splat-mode", result.stderr)
+
+    def test_dataset_options_require_explicit_save(self) -> None:
+        for options in (("--splat-depth",), ("--splat-out", "/tmp/data")):
+            with self.subTest(options=options):
+                result = self.run_cli("--splat-mode", *options, "--preflight")
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("require --save-splat", result.stderr)
 
 
 if __name__ == "__main__":
