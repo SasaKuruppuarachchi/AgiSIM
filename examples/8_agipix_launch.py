@@ -120,6 +120,9 @@ def _build_parser() -> argparse.ArgumentParser:
     display.add_argument("--gui", dest="headless", action="store_false",
                          help="Show the Isaac Sim window.")
     parser.set_defaults(headless=True)
+    parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
+                        help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
+                             "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
     parser.add_argument("--namespace", default="drone", help="Vehicle namespace prefix (default: drone).")
     parser.add_argument("--id", dest="vehicle_id", type=_nonnegative_id, default=0,
                         help="Vehicle ID appended to namespace (default: 0).")
@@ -155,6 +158,8 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
     ]
     if args.headless:
         argv.append("--headless")
+    if not args.chase_cam:
+        argv.append("--no-chase-cam")
     if args.lidar_timestamps:
         argv.append("--lidar-timestamps")
     # Match the successful Flight 26 Isaac renderer/asset-root settings.
@@ -201,6 +206,7 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
         "namespace": args.namespace,
         "vehicle_id": args.vehicle_id,
         "headless": args.headless,
+        "chase_cam": not args.headless and args.chase_cam,
         "physics_dt": args.physics_dt,
         "lidar_timestamps": args.lidar_timestamps,
         "ros_domain_id": 5,

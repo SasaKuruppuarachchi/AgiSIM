@@ -79,7 +79,8 @@ DEFAULT_RENDER_HZ = 30.0
 
 class AgipixApp:
     def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
-                 lidar_timestamps=False, environment="AKW_C", px4_dir=None):
+                 lidar_timestamps=False, environment="AKW_C", px4_dir=None,
+                 gui=False, chase_cam=True):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
@@ -90,6 +91,8 @@ class AgipixApp:
             raise ValueError("Unknown environment: " + environment)
         self.environment = environment
         self.px4_dir = px4_dir
+        self.gui = gui
+        self._chase_camera = None
 
         self.timeline = omni.timeline.get_timeline_interface()
         self.assets_root_path = nucleus.get_assets_root_path()
@@ -113,6 +116,13 @@ class AgipixApp:
         self._setup_world()
         self._spawn_vehicle()
         self._setup_publishers_and_sensors()
+        if self.gui and chase_cam:
+            from agipix_chase_camera import ChaseCamera, settings_for_environment
+
+            self._chase_camera = ChaseCamera(
+                self.stage, self.drone.prim_path, SimulationManager.get_simulation_time(),
+                settings_for_environment(self.environment),
+            )
 
         # Register physics step callback with SimulationManager
         self._cb_physics = SimulationManager.register_callback(
@@ -300,9 +310,17 @@ class AgipixApp:
     def run(self):
         try:
             self.timeline.play()
-            while simulation_app.is_running() and not self.stop_sim:
-                simulation_app.update()
-                self.node.publish_timeline_state(self.timeline, SimulationManager.get_simulation_time())
+            if self._chase_camera is None:
+                # Preserve the headless loop: no camera import, prim or per-step work.
+                while simulation_app.is_running() and not self.stop_sim:
+                    simulation_app.update()
+                    self.node.publish_timeline_state(self.timeline, SimulationManager.get_simulation_time())
+            else:
+                while simulation_app.is_running() and not self.stop_sim:
+                    simulation_app.update()
+                    sim_time = SimulationManager.get_simulation_time()
+                    self._chase_camera.update(self.drone._state.position, sim_time)
+                    self.node.publish_timeline_state(self.timeline, sim_time)
         finally:
             cleanup_errors = []
             try:
@@ -340,6 +358,9 @@ def positive_physics_dt(value):
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Run the Agipix standalone simulation example.")
     parser.add_argument("--headless", action="store_true", help="Run without the Isaac Sim window.")
+    parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
+                        help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
+                             "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
     parser.add_argument("--environment", choices=tuple(FLAT_ENVIRONMENTS), default="AKW_C",
                         help="Installed environment to load (default: AKW_C).")
     parser.add_argument("--px4-dir", help="PX4 source/build directory (defaults to Pegasus configuration).")
@@ -372,7 +393,8 @@ def main():
         args = parse_cli_args()
         app = AgipixApp(
             namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt,
-            lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir
+            lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
+            gui=not args.headless, chase_cam=args.chase_cam,
         )
         app.run()
     finally:

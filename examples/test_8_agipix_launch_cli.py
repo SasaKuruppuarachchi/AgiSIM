@@ -1,6 +1,7 @@
 """Pure CLI tests for the clean Isaac bootstrap; they never import or start Isaac Sim."""
 
 import json
+import shlex
 import subprocess
 import sys
 import unittest
@@ -24,7 +25,8 @@ class HospitalFlight25CliTest(unittest.TestCase):
         result = self.run_cli("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in ("--headless", "--gui", "--namespace", "--id", "--environment",
-                       "--px4-dir", "--physics-dt", "--preflight", "--print-command"):
+                       "--px4-dir", "--physics-dt", "--preflight", "--print-command",
+                       "--chase-cam", "--no-chase-cam"):
             self.assertIn(option, result.stdout)
         self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
@@ -37,6 +39,7 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertTrue(plan["environment_asset"].endswith("akw_lvl1_climb.usd"))
         self.assertEqual(plan["vehicle"], "drone0")
         self.assertTrue(plan["headless"])
+        self.assertFalse(plan["chase_cam"])
         self.assertEqual(plan["physics_dt"], 0.004)
         self.assertTrue(plan["lidar_timestamps"])
         self.assertEqual(plan["ros_domain_id"], 5)
@@ -52,6 +55,7 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertTrue(plan["environment_asset_exists"])
         self.assertTrue(plan["environment_asset"].endswith("Worlds/isaac_envs/hospital.usd"))
         self.assertFalse(plan["headless"])
+        self.assertTrue(plan["chase_cam"])
         self.assertEqual(plan["vehicle"], "drone2")
         self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
@@ -59,6 +63,24 @@ class HospitalFlight25CliTest(unittest.TestCase):
         result = self.run_cli("--physics-dt", "0", "--preflight")
         self.assertEqual(result.returncode, 2)
         self.assertIn("physics dt must be a finite positive number", result.stderr)
+
+    def test_chase_camera_switches_reach_the_canonical_script(self) -> None:
+        for options, enabled, headless, disabled_flag in (
+            ((), False, True, False),
+            (("--gui",), True, False, False),
+            (("--gui", "--no-chase-cam"), False, False, True),
+            (("--gui", "--no-chase-cam", "--chase-cam"), True, False, False),
+            (("--headless", "--chase-cam"), False, True, False),
+        ):
+            with self.subTest(options=options):
+                result = self.run_cli(*options, "--print-command")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+                plan = json.loads(plan_text)
+                command = shlex.split(command_text.splitlines()[0])
+                self.assertEqual(plan["chase_cam"], enabled)
+                self.assertEqual("--headless" in command, headless)
+                self.assertEqual("--no-chase-cam" in command, disabled_flag)
 
 
 if __name__ == "__main__":
