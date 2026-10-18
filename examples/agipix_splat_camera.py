@@ -3,6 +3,7 @@
 import math
 
 import carb
+import cv2
 import numpy as np
 import omni.replicator.core as rep
 import omni.usd
@@ -143,7 +144,9 @@ class SplatRecorder(rep.Writer):
         images, depths, bodies = {}, {}, []
         for product, values in data["renderProducts"].items():
             mount = self._by_product[product]
-            images[mount.name] = np.asarray(values["rgb"]["data"])[..., :3]
+            # Pack once in native code. A strided RGBA slice makes both dataset
+            # copying and panorama resizing repack every pixel much more slowly.
+            images[mount.name] = cv2.cvtColor(np.asarray(values["rgb"]["data"]), cv2.COLOR_RGBA2RGB)
             if self._dataset is not None:
                 params = values["camera_params"]
                 world_cv = rendered_camera_to_opencv(params["cameraViewTransform"])

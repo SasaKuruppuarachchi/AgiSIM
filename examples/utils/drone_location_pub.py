@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import math
+from array import array
 import json
 import time
 import uuid
@@ -100,7 +101,9 @@ class DroneLocationPublisher(Node):
         msg.encoding = "rgb8"
         msg.is_bigendian = False
         msg.step = msg.width * 3
-        msg.data = rgb.tobytes()
+        # Typed byte arrays use the ROS setter's fast path instead of checking
+        # every pixel channel in Python. The serialized payload is identical.
+        msg.data = array("B", rgb.tobytes())
         self._splat_preview_publisher.publish(msg)
         # The bridge subscribes when a Foxglove panel selects this topic. Avoid
         # JPEG work when no compressed-image consumer is connected.
@@ -108,7 +111,7 @@ class DroneLocationPublisher(Node):
             compressed = self._splat_compressed_image_type()
             compressed.header = msg.header
             compressed.format = "rgb8; jpeg compressed bgr8"
-            compressed.data = self._encode_splat_jpeg(rgb)
+            compressed.data = array("B", self._encode_splat_jpeg(rgb))
             self._splat_preview_compressed_publisher.publish(compressed)
 
     def publish_static_transform(
