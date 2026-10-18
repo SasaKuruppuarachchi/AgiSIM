@@ -130,6 +130,7 @@ def launch():
     parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--profile", action="store_true", help="Diagnostic cProfile + native CPU trace (adds overhead).")
     parser.add_argument("--cpu-threads", type=int, default=8)
+    parser.add_argument("--leds", action="store_true", help="Include the optional navigation lights.")
     args = parser.parse_args()
     if args.repeats < 1 or args.seconds < 1 or args.warmup < 0 or args.cpu_threads < 1:
         parser.error("repeats/cpu-threads must be positive, seconds >= 1 and warmup nonnegative")
@@ -149,18 +150,20 @@ def launch():
                 case = output / f"{environment}-{mode}-{repeat}"
                 case.mkdir()
                 flags = ["--headless", "--environment", environment, *MODES[mode]]
+                if args.leds:
+                    flags.append("--leds")
                 if mode in ("save", "depth"):
                     flags += ["--splat-out", str(case / "dataset")]
                 parsed, extra = launcher._build_parser().parse_known_args(flags)
                 command, env, _ = launcher._launch_plan(parsed, extra)
                 config = dict(case=str(case), mode=mode, environment=environment, seconds=args.seconds,
-                              warmup=args.warmup, profile=args.profile, repeat=repeat,
+                              warmup=args.warmup, profile=args.profile, repeat=repeat, leds=args.leds,
                               cpu_threads=args.cpu_threads,
                               physics_threads=int(env.get("AGIPIX_PHYSICS_THREADS", "0")))
                 config["benchmark_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
                 config["source_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                            for p in [HERE / "8_agipix.py", HERE / "utils/drone_location_pub.py",
-                                                     *HERE.glob("agipix_splat_*.py")]}
+                                                     HERE / "agipix_leds.py", *HERE.glob("agipix_splat_*.py")]}
                 (case / "config.json").write_text(json.dumps(config, indent=2))
                 env.update(CANONICAL_SCRIPT=str(Path(__file__).resolve()), AGIPIX_RTF_CHILD=json.dumps(config),
                            ROS_DOMAIN_ID="193", AGIPIX_CPU_THREADS=str(args.cpu_threads))
@@ -242,7 +245,7 @@ def run_child(config):
                 setattr(SplatDataset, method, timed(name, getattr(SplatDataset, method)))
         app = module.AgipixApp(namespace=args.namespace, vehicle_id=args.vehicle_id, physics_dt=args.physics_dt,
                               lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
-                              gui=not args.headless, chase_cam=args.chase_cam, splat_mode=args.splat_mode,
+                              gui=not args.headless, chase_cam=args.chase_cam, splat_mode=args.splat_mode, leds=args.leds,
                               splat_depth=args.splat_depth, splat_out=args.splat_out, save_splat=args.save_splat)
         assert args.physics_dt == .004 and args.lidar_timestamps
         recorder = app._splat_recorder

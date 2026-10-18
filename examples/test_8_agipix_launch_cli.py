@@ -26,7 +26,7 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in ("--headless", "--gui", "--namespace", "--id", "--environment",
                        "--px4-dir", "--physics-dt", "--preflight", "--print-command",
-                       "--chase-cam", "--no-chase-cam", "--splat-mode", "--save-splat", "--splat-depth", "--splat-out"):
+                       "--chase-cam", "--no-chase-cam", "--splat-mode", "--save-splat", "--splat-depth", "--splat-out", "--leds"):
             self.assertIn(option, result.stdout)
         self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
@@ -86,6 +86,23 @@ class HospitalFlight25CliTest(unittest.TestCase):
         result = self.run_cli("--print-command")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("splat", result.stdout)
+
+    def test_leds_default_off_and_reach_canonical_script_when_enabled(self) -> None:
+        for flags in ((), ("--leds",), ("--gui", "--leds"), ("--splat-mode", "--leds")):
+            with self.subTest(flags=flags):
+                result = self.run_cli(*flags, "--print-command")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+                plan = json.loads(plan_text)
+                command = shlex.split(command_text.splitlines()[0])
+                enabled = "--leds" in flags
+                self.assertEqual(plan.get("leds", False), enabled)
+                self.assertEqual("--leds" in command, enabled)
+                if not enabled:
+                    self.assertNotIn("leds", plan)
+                self.assertEqual(plan["physics_dt"], 0.004)
+                self.assertTrue(plan["lidar_timestamps"])
+                self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
     def test_splat_options_reach_the_canonical_script_without_starting_isaac(self) -> None:
         result = self.run_cli("--splat-mode", "--save-splat", "--splat-depth", "--splat-out", "/tmp/splat data",

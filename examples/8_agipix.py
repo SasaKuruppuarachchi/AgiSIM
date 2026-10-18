@@ -87,7 +87,7 @@ class AgipixApp:
     def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
                  lidar_timestamps=False, environment="AKW_C", px4_dir=None,
                  gui=False, chase_cam=True, splat_mode=False, splat_depth=False, splat_out=None,
-                 save_splat=False):
+                 save_splat=False, leds=False):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
@@ -128,6 +128,10 @@ class AgipixApp:
 
         self._setup_world()
         self._spawn_vehicle()
+        if leds:
+            from agipix_leds import add_navigation_lights
+
+            add_navigation_lights(omni.usd.get_context().get_stage(), self.drone.prim_path + "/body")
         self._setup_publishers_and_sensors()
         if self.splat_mode:
             from agipix_splat_camera import SplatRecorder
@@ -398,6 +402,8 @@ def positive_physics_dt(value):
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Run the Agipix standalone simulation example.")
     parser.add_argument("--headless", action="store_true", help="Run without the Isaac Sim window.")
+    parser.add_argument("--leds", action="store_true",
+                        help="Enable white front/red rear navigation lights on the guard corners (default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
@@ -449,7 +455,7 @@ def main():
             lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
             gui=not args.headless, chase_cam=args.chase_cam,
             splat_mode=args.splat_mode, splat_depth=args.splat_depth, splat_out=args.splat_out,
-            save_splat=args.save_splat,
+            save_splat=args.save_splat, leds=args.leds,
         )
         app.run()
     finally:

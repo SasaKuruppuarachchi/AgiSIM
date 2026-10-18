@@ -132,7 +132,7 @@ def run_validation():
                               lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
                               gui=not args.headless, chase_cam=args.chase_cam,
                               splat_mode=args.splat_mode, splat_depth=args.splat_depth, splat_out=args.splat_out,
-                              save_splat=args.save_splat)
+                              save_splat=args.save_splat, leds=args.leds)
         assert not app.stage.GetPrimAtPath(app.drone.prim_path + "/body/RealSense_Camera")
         target = [1.6, 0.0, 1.2]
         sphere = UsdGeom.Sphere.Define(app.stage, "/World/SplatValidationTarget")

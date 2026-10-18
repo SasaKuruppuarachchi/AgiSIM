@@ -120,6 +120,8 @@ def _build_parser() -> argparse.ArgumentParser:
     display.add_argument("--gui", dest="headless", action="store_false",
                          help="Show the Isaac Sim window.")
     parser.set_defaults(headless=True)
+    parser.add_argument("--leds", action="store_true",
+                        help="Enable white front/red rear navigation lights on the guard corners (default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
@@ -167,6 +169,8 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
     ]
     if args.headless:
         argv.append("--headless")
+    if args.leds:
+        argv.append("--leds")
     if not args.chase_cam:
         argv.append("--no-chase-cam")
     if args.lidar_timestamps:
@@ -236,6 +240,8 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
         "px4_defaults": PX4_DEFAULTS,
         "kit_args": canonical_args[canonical_args.index("--/renderer/multiGpu/enabled=false"):],
     }
+    if args.leds:
+        info["leds"] = True
     if args.splat_mode:
         info.update(splat_mode=True, save_splat=args.save_splat, splat_depth=args.splat_depth,
                     splat_out=(str(args.splat_out.expanduser().resolve()) if args.splat_out is not None
