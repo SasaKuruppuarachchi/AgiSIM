@@ -32,6 +32,7 @@ import traceback
 
 
 HERE = Path(__file__).resolve().parent
+from agipix_owned_process import OwnedProcessGroup
 MODES = {"off": (), "preview": ("--splat-mode",),
          "save": ("--splat-mode", "--save-splat"),
          "depth": ("--splat-mode", "--save-splat", "--splat-depth")}
@@ -45,10 +46,21 @@ def load_script(name, path):
 
 
 def ensure_idle():
-    for command in (["pgrep", "-x", "px4"], ["pgrep", "-f", "[8]_agipix"], ["pgrep", "-x", "kit"]):
+    for command in (["pgrep", "-x", "px4"], ["pgrep", "-f", "[8]_agipix"], ["pgrep", "-x", "kit"],
+                    ["pgrep", "-f", "[i]saacsim/kit/python/bin/python3.*(validate_forest|bench_agipix)"]):
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode == 0:
-            raise RuntimeError(f"Existing simulator/PX4: {result.stdout.strip()}; leaving it untouched")
+            active = []
+            for pid in result.stdout.split():
+                try:
+                    # A dead child awaiting reaping cannot simulate or own the GPU.
+                    state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+                except FileNotFoundError:
+                    continue
+                if state != "Z":
+                    active.append(pid)
+            if active:
+                raise RuntimeError(f"Existing simulator/PX4: {' '.join(active)}; leaving it untouched")
 
 
 class SystemSampler(threading.Thread):
@@ -123,7 +135,7 @@ def system_summary(path, start, end):
 def launch():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="New evidence directory; never overwritten.")
-    parser.add_argument("--environments", nargs="+", choices=("FOREST_FI", "AKW_C"), default=["FOREST_FI", "AKW_C"])
+    parser.add_argument("--environments", nargs="+", choices=("FOREST_FI", "FOREST_SNOW", "FOREST_MID_SNOW", "FOREST_PINE_HILLS", "AKW_C"), default=["FOREST_FI", "AKW_C"])
     parser.add_argument("--modes", nargs="+", choices=tuple(MODES), default=list(MODES))
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--seconds", type=float, default=60.0)
@@ -131,6 +143,7 @@ def launch():
     parser.add_argument("--profile", action="store_true", help="Diagnostic cProfile + native CPU trace (adds overhead).")
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--leds", action="store_true", help="Include the optional navigation lights.")
+    parser.add_argument("--gui", action="store_true", help="Measure the GUI with its chase viewport as well as sensors.")
     args = parser.parse_args()
     if args.repeats < 1 or args.seconds < 1 or args.warmup < 0 or args.cpu_threads < 1:
         parser.error("repeats/cpu-threads must be positive, seconds >= 1 and warmup nonnegative")
@@ -149,21 +162,31 @@ def launch():
                 ensure_idle()
                 case = output / f"{environment}-{mode}-{repeat}"
                 case.mkdir()
-                flags = ["--headless", "--environment", environment, *MODES[mode]]
+                flags = ["--gui" if args.gui else "--headless", "--environment", environment, *MODES[mode]]
                 if args.leds:
                     flags.append("--leds")
                 if mode in ("save", "depth"):
                     flags += ["--splat-out", str(case / "dataset")]
                 parsed, extra = launcher._build_parser().parse_known_args(flags)
-                command, env, _ = launcher._launch_plan(parsed, extra)
+                command, env, plan = launcher._launch_plan(parsed, extra)
                 config = dict(case=str(case), mode=mode, environment=environment, seconds=args.seconds,
                               warmup=args.warmup, profile=args.profile, repeat=repeat, leds=args.leds,
-                              cpu_threads=args.cpu_threads,
+                              cpu_threads=args.cpu_threads, gui=args.gui,
+                              pine_render_preset=(env.get("AGIPIX_PINE_RENDER_PRESET") or load_script(
+                                  "pine_render_metadata", HERE.parent / "scripts/forest_pine_hills/runtime.py").DEFAULT_PRESET)
+                                  if environment == "FOREST_PINE_HILLS" else None,
                               physics_threads=int(env.get("AGIPIX_PHYSICS_THREADS", "0")))
                 config["benchmark_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                with Path(plan["environment_asset"]).open("rb") as asset:
+                    config["environment_usd_sha256"] = hashlib.file_digest(asset, "sha256").hexdigest()
                 config["source_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                            for p in [HERE / "8_agipix.py", HERE / "utils/drone_location_pub.py",
                                                      HERE / "agipix_leds.py", *HERE.glob("agipix_splat_*.py")]}
+                if environment == "FOREST_PINE_HILLS":
+                    config["pine_source_sha256"] = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in [HERE.parent / "scripts/forest_pine_hills/runtime.py",
+                                  HERE.parent / "scripts/forest_pine_hills/PineHills.mdl",
+                                  Path(plan["environment_asset"]).parent / "textures/forest_pine_hills/PineHills.mdl"]}
                 (case / "config.json").write_text(json.dumps(config, indent=2))
                 env.update(CANONICAL_SCRIPT=str(Path(__file__).resolve()), AGIPIX_RTF_CHILD=json.dumps(config),
                            ROS_DOMAIN_ID="193", AGIPIX_CPU_THREADS=str(args.cpu_threads))
@@ -171,22 +194,17 @@ def launch():
                 with (case / "simulator.log").open("w") as log:
                     process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT,
                                                start_new_session=True)
+                    owned = OwnedProcessGroup(process)
                     sampler = SystemSampler(process.pid, case / "system.jsonl")
                     sampler.start()
                     try:
                         code = process.wait(timeout=max(180, (args.seconds + args.warmup) * 12))
-                    except BaseException:
-                        # Signal only the process group this benchmark created.
-                        os.killpg(process.pid, signal.SIGINT)
-                        try:
-                            process.wait(timeout=25)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGTERM)
-                            process.wait(timeout=10)
-                        raise
                     finally:
-                        sampler.stop_event.set()
-                        sampler.join(timeout=5)
+                        try:
+                            owned.stop()
+                        finally:
+                            sampler.stop_event.set()
+                            sampler.join(timeout=5)
                 if code != 0 or not (case / "report.json").is_file():
                     raise RuntimeError(f"Benchmark failed ({code}): {case / 'simulator.log'}")
                 report = json.loads((case / "report.json").read_text())
@@ -368,6 +386,7 @@ def run_child(config):
                     native_profiler.set_capture_mask(callback_state["old_capture_mask"])
 
         module.simulation_app.update = bounded_update
+        render_scope_metadata = app._render_scope.metadata() if app._render_scope is not None else None
         app.run()
         close_finished = time.monotonic()
         for _ in range(20):
@@ -390,6 +409,7 @@ def run_child(config):
         observed = {name: [s for s, _ in stamps if in_window(s)] for name, stamps in received.items()}
         expected = round(config["seconds"] * 10)
         report = {**config, "wall_start": wall_start, "wall_end": wall_end,
+                  "environment_render_scope": render_scope_metadata,
                   "sim_start": sim_start, "rtf_mean": config["seconds"] / (wall_end - wall_start),
                   "rtf_including_close": config["seconds"] / (close_finished - wall_start),
                   "close_drain_s": close_finished - wall_end,

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 
 import numpy as np
 
@@ -232,7 +233,9 @@ def decimate(part, ratio, cache_dir, tag):
         r = subprocess.run(cmd, capture_output=True, text=True, env=blender_env())
         if r.returncode != 0 or not os.path.exists(dst):
             raise RuntimeError(f"blender decimate failed for {tag}:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
-        os.remove(src)
+        archive = os.path.join(cache_dir, "archive")
+        os.makedirs(archive, exist_ok=True)
+        os.rename(src, os.path.join(archive, f"{time.time_ns()}_{os.path.basename(src)}"))
     d = np.load(dst)
     return Part(part.role, part.mat, d["V"], d["F"], d["UV"])
 

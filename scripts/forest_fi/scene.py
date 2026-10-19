@@ -92,8 +92,9 @@ class Terrain:
         """Height of the triangulated mesh (quads split along the (i,j)-(i+1,j+1) diagonal)."""
         x, y = np.asarray(x, float), np.asarray(y, float)
         n = len(self.xs)
-        fx = np.clip((x - self.xs[0]) / GRID, 0, n - 1 - 1e-9)
-        fy = np.clip((y - self.xs[0]) / GRID, 0, n - 1 - 1e-9)
+        spacing = float(self.xs[1] - self.xs[0])
+        fx = np.clip((x - self.xs[0]) / spacing, 0, n - 1 - 1e-9)
+        fy = np.clip((y - self.xs[0]) / spacing, 0, n - 1 - 1e-9)
         i, j = np.floor(fx).astype(int), np.floor(fy).astype(int)
         u, v = fx - i, fy - j
         z00, z10, z01, z11 = self.Z[i, j], self.Z[i + 1, j], self.Z[i, j + 1], self.Z[i + 1, j + 1]
@@ -165,7 +166,8 @@ def place_trees(rng, terrain, log):
     return np.array(pts)
 
 
-def assign_species(rng, P, terrain):
+def assign_species(rng, P, terrain, fractions=None):
+    fractions = SPECIES_FRAC if fractions is None else fractions
     n = len(P)
     fr = np.random.default_rng(rng.integers(1 << 31))
     zt = terrain.z_at(P[:, 0], P[:, 1])
@@ -173,8 +175,8 @@ def assign_species(rng, P, terrain):
         + rng.normal(0, 0.35, n)
     s_birch = smooth_field(fr, P[:, 0], P[:, 1], scales=(15,), n=5) + rng.normal(0, 0.45, n)
     sp = np.array(["pine"] * n, dtype=object)
-    n_sp = int(round(SPECIES_FRAC["spruce"] * n))
-    n_b = int(round(SPECIES_FRAC["birch"] * n))
+    n_sp = int(round(fractions["spruce"] * n))
+    n_b = int(round(fractions.get("birch", 0) * n))
     order = np.argsort(-s_spruce)
     sp[order[:n_sp]] = "spruce"
     rest = np.flatnonzero(sp == "pine")
@@ -346,24 +348,50 @@ def world_pts(P, t, yaw_deg, scale):
 
 
 # ===================================================================== the builder
-def build_scene(a, work, log):
+def build_scene(a, work, log, *, name="forest_fi", species_frac=None,
+                terrain_factory=Terrain, postprocess=None):
+    """Shared stand builder; optional seasonal hooks leave the FOREST_FI defaults intact.
+
+    postprocess(stage, stand, tex_dir, tex_rel) may edit the scene and its stand table
+    before either is saved. Existing generated files are archived on a rebuild.
+    """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
+    scene_name = name  # Prototype/material loops below also use the local name variable.
     rng = np.random.default_rng(a.seed)
     pdir = os.path.join(work, "protos")
     PM = json.load(open(os.path.join(pdir, "protos.json")))
     out = os.path.abspath(a.out)
     out_dir = os.path.dirname(out)
-    tex_dir = os.path.join(out_dir, "textures", "forest_fi")
-    tex_rel = "./textures/forest_fi/"
-    if os.path.isdir(tex_dir):
-        shutil.rmtree(tex_dir)
+    tex_dir = os.path.join(out_dir, "textures", name)
+    tex_rel = f"./textures/{name}/"
+    if os.path.exists(out) or os.path.isdir(tex_dir):
+        from datetime import datetime
+        archive = os.path.join(out_dir, "archive", name + "_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        os.makedirs(archive)
+        if os.path.exists(out):
+            shutil.move(out, os.path.join(archive, os.path.basename(out)))
+        if os.path.isdir(tex_dir):
+            archived_textures = os.path.join(archive, "textures")
+            os.makedirs(archived_textures)
+            shutil.move(tex_dir, os.path.join(archived_textures, name))
+        license_path = os.path.join(out_dir, f"{name}_LICENSES.md")
+        if os.path.isfile(license_path):
+            shutil.copy2(license_path, archive)
+        old_stand = os.path.join(a.report_dir, f"{name}_stand.json")
+        if os.path.isfile(old_stand):
+            shutil.copy2(old_stand, archive)
+        if name in ("forest_snow", "forest_mid_snow", "forest_pine_hills"):
+            for filename in ("provenance.json", "needle_alpha_check.json", f"{name}_needle_alpha.json"):
+                path = os.path.join(a.report_dir, filename)
+                if os.path.isfile(path):
+                    shutil.copy2(path, archive)
     os.makedirs(tex_dir)
     os.makedirs(a.report_dir, exist_ok=True)
 
-    terrain = Terrain(np.random.default_rng(a.seed + 1))
+    terrain = terrain_factory(np.random.default_rng(a.seed + 1))
     # --------------------------------------------------------------- trees
     P = place_trees(np.random.default_rng(a.seed + 2), terrain, log)
-    species = assign_species(np.random.default_rng(a.seed + 3), P, terrain)
+    species = assign_species(np.random.default_rng(a.seed + 3), P, terrain, species_frac)
     trng = np.random.default_rng(a.seed + 4)
     crowns = {sp: [k for k, m in PM.items() if m["kind"] in ("crown", "tree") and m.get("species") == sp]
               for sp in SPECIES_FRAC}
@@ -831,14 +859,20 @@ def build_scene(a, work, log):
         "only. No PhysicsScene (Pegasus creates its own). Assets: Poly Haven CC0, friggog/tree-gen birch, "
         "procedural bilberry.")
     layer.customLayerData = {"forest_fi_summary_json": json.dumps(summary)}
+    stand = dict(summary=summary, terrain=dict(grid=float(terrain.xs[1] - terrain.xs[0]), area=float(terrain.xs[-1] - terrain.xs[0]),
+                                               flat_r=getattr(terrain, "flat_r", CLEAR_FLAT_R),
+                                               blend_r=getattr(terrain, "blend_r", CLEAR_BLEND_R),
+                                               z=terrain.Z.astype(np.float32).round(4).tolist()),
+                 trees=[{k: v for k, v in t.items() if k != "profile"} for t in trees], objects=objs)
+    if postprocess is not None:
+        postprocess(stage, stand, tex_dir, tex_rel)
+        layer.customLayerData = {f"{scene_name}_summary_json": json.dumps(summary)}
     stage.GetRootLayer().Save()
     log(f"wrote {out} ({os.path.getsize(out) / 1e6:.1f} MB), textures {len(os.listdir(tex_dir))} files "
         f"({sum(os.path.getsize(os.path.join(tex_dir, f)) for f in os.listdir(tex_dir)) / 1e6:.1f} MB)")
 
     # stand table for the report / GT tools --------------------------------
-    stand = dict(summary=summary, terrain=dict(grid=GRID, area=AREA, flat_r=CLEAR_FLAT_R, blend_r=CLEAR_BLEND_R,
-                                               z=terrain.Z.astype(np.float32).round(4).tolist()),
-                 trees=[{k: v for k, v in t.items() if k != "profile"} for t in trees], objects=objs)
-    json.dump(stand, open(os.path.join(a.report_dir, "forest_fi_stand.json"), "w"), default=float)
-    log(f"stand table -> {os.path.join(a.report_dir, 'forest_fi_stand.json')}")
+    stand_path = os.path.join(a.report_dir, f"{scene_name}_stand.json")
+    json.dump(stand, open(stand_path, "w"), default=float)
+    log(f"stand table -> {stand_path}")
     return summary

@@ -1,0 +1,197 @@
+FOREST_PINE_HILLS lighting / rendering research — Isaac Sim 6.0, 2026-10-18
+
+Scope and integration
+  Build: lighting.build_lighting(stage, verified_hdr_path, tex_dir, tex_rel,
+    expected_md5=manifest_md5) returns source/derived hashes, solar direction,
+    extracted energy, dome/sun parameters. It never saves a USD itself.
+  Runtime: scope = ScopedRenderSettings(environment).apply(); call
+    scope.fix_camera_exposure(stage) after chase/splat cameras are created;
+    scope.restore() in finally / before switching environments. New validation
+    cameras need a second fix_camera_exposure call. The non-pine branch is a
+    complete no-op; there is no render/physics update callback.
+  AGIPIX_PINE_RENDER_PRESET selects controlled trials. It is read only by this
+    environment. Final default uncached_haze; realtime, gi5, uncached,
+    volumetric, volumetric_fast, volumetric_light, haze and pathtracing remain
+    explicit diagnostic alternatives.
+
+Sun and sky
+  Primary specifications:
+    https://openusd.org/release/api/class_usd_lux_distant_light.html
+    https://docs.omniverse.nvidia.com/materials-and-rendering/latest/lighting.html
+    https://docs.omniverse.nvidia.com/kit/docs/usdrt.scenegraph/latest/api/classusdrt_1_1_usd_lux_dome_light.html
+  Installed authoritative schema:
+    /home/sasa/isaacsim/extscache/omni.usd.libs-1.0.3+f9bf0dda.lx64.r.cp312/bin/usd/usdLux/resources/usdLux/schema.usda
+    DistantLight defaults to a 0.53-degree angular diameter. LightAPI's normalize
+    documentation defines normalized distant intensity as normal illuminance
+    in lux; it is independent of the disk angle. A distant light emits on -Z.
+  USD 25.05 changed dome orientation and distant normalization in RTX. Both
+    new lights explicitly author omni:rtx:usdluxVersion=2505, rather than rely
+    on compatibility defaults. Local test_usd_commands.py lines3365–3462 under
+    extscache/omni.usd-1.16.0+f9bf0dda.lx64.r.cp312/omni/usd/tests verifies that
+    exact marker and the changed dome orientation.
+  The image's brightest compact upper-hemisphere lobe gives solar direction.
+    The nearby annular sky is subtracted from this lobe and the excess integrated
+    with solid angle and incidence cosine. A derived linear HDR holds the sky,
+    while the 0.53-degree normalized sun carries that removed RGB energy. This
+    avoids double illumination. Solar_gain=1 preserves the source ratio; a
+    different gain is an explicitly reported artistic adjustment. The split
+    approximates the capture's blurred solar halo as an ideal solar disk.
+  A single visible, normally shadowed DomeLight supplies the background and
+    sky illumination. No hidden second dome, ambient hack or shadow unlinking.
+    Dome and sun receive the same Y-up -> Z-up conversion and yaw; the horizon
+    is never tilted to make a low sun higher. Tests verify their world alignment.
+
+HDR candidates (source files are read-only; only CC0 data, no downloaded code)
+  kloppenheim_06_puresky:
+    https://polyhaven.com/a/kloppenheim_06_puresky
+    CC0, Greg Zaal / Jarod Guest. Measured 2k image: sun elevation4.633 degrees,
+    peak/nearby-sky contrast23.57, RGB solar normal irradiance
+    (0.00563244,0.00284677,0.000669447) before multiplying dome intensity.
+    At sky6000 the solar intensity is only33.79 lux: cloud-blocked near-sunset
+    sun, unsuitable for the reference's shafts and easily occluded by hills.
+    Retained as a small rejected candidate, not the preferred production sky.
+  Selected replacement, measured from the MD5-verified 2k HDR:
+    https://polyhaven.com/a/syferfontein_18d_clear_puresky
+    CC0, Greg Zaal / Jarod Guest; clear afternoon sky, 22EV source. Actual solar
+    elevation18.366 degrees, peak/nearby-sky ratio37110.6. Removed RGB normal
+    irradiance=(15.3072,13.2643,8.20125); sky6000 produces91843.3 lux sun with
+    RGB colour=(1,0.86654,0.53578). Sun and sky remain energy matched at gain1.
+    A pure sky avoids applying a photographed forest's canopy shadows twice.
+
+GI, physical occlusion, and quality trials
+  https://docs.omniverse.nvidia.com/materials-and-rendering/latest/rtx-renderer_rt.html
+  https://docs.omniverse.nvidia.com/materials-and-rendering/latest/rtx-renderer_pt.html
+  RT2 itself is a cached path tracer. The realtime preset uses3 bounces and
+    cached indirect light. gi5 tests5 bounces; uncached also disables radiance
+    caching to test whether canopy bounce improves. The separate legacy AO and
+    global ambient controls are not RT2 shading improvements and are omitted.
+    Shadows plus indirect transport provide actual canopy occlusion.
+  pathtracing tests RTX Interactive with6 bounces,2 samples/frame,64-sample
+    accumulation cap and OptiX denoising. This is an evaluation preset, not
+    assumed suitable for real-time four-camera acquisition. Any measured cost
+    and visual gain must be reported before promotion to production.
+  Verified in installed omni.rtx.settings.core-0.7.1+f9bf0dda:
+    omni/rtx/settings/core/widgets/rtpt_widgets.py: maxBounces,
+    maxSpecularAndTransmissionBounces, cached/enabled, lightcache/cached/enabled.
+    Local widget caps RT2's maximum bounce control at6, so gi5 is valid.
+  /home/sasa/isaacsim/exts/isaacsim.simulation_app/isaacsim/simulation_app/simulation_app.py
+    lines600–655 confirms /rtx/rendermode values RealTimePathTracing/PathTracing
+    and pathtracing spp,totalSpp,maxBounces,optixDenoiser/enabled paths.
+
+Atmosphere
+  https://docs.omniverse.nvidia.com/materials-and-rendering/latest/rtx-renderer_common.html
+  RT2 supports global volumetric scattering and simple fog. The volumetric
+    trial uses32 depth slices, pixelRatio16,16-frame accumulation, no density
+    noise, forward anisotropy0.55, 30m height and120m frustum depth. This should
+    create true light shafts, but its per-camera cost needs measurement.
+    The alternative haze preset supplies gentle distance tint with no shafts.
+  Local common_widgets.py confirms globalVolumetricEffects/enabled,
+    inscattering atmosphereHeight/maxDistance/densityMult/transmittanceColor,
+    transmittanceMeasurementDistance/singleScatteringAlbedo/anisotropyFactor,
+    and /rtx/fog controls. Its volume distances are explicitly centimetres;
+    simple-fog distances are labelled metres. Validate scene-scale appearance.
+  RT2's widget stack imports rt_widgets.GlobalVolumetricEffectsSettingsFrame:
+    depthSlices, pixelRatio, maxAccumulationFrames, sliceDistributionExponent.
+    The installed pixelRatio tooltip says LOWER values increase fidelity/cost;
+    the current web table says higher. We follow the installed renderer UI
+    and use16 as a deliberately coarse initial trial, not claim verified cost.
+
+Fixed exposure and isolation
+  https://docs.omniverse.nvidia.com/materials-and-rendering/latest/cameras.html
+  https://docs.omniverse.nvidia.com/materials-and-rendering/latest/rtx_post-processing.html
+  Histogram auto-exposure is disabled. Fixed ACES operator, ISO1600,1/50s,f/5,
+    responsivity1 and compensation0 apply to every existing camera, including
+    splat cameras. ISO100 was the initial comparison value; the measured ISO
+    trial selected a fixed+4-stop gain for this shaded forest. It is explicit
+    and independent of changing scene brightness, not an auto-exposure target.
+    A physically meaningful fixed response is not a claim of calibrated sensor
+    spectral response or raw linear dataset pixels: the existing RGB images
+    still include ACES tone mapping and the existing image encoding.
+  Installed post_widgets.py lines95–98 and254 verifies the tonemap settings
+    and /rtx/post/histogram/enabled. Installed pxr/UsdGeom/__init__.pyi lines
+    165–173 verifies CreateExposureAttr/CreateExposureFStopAttr/
+    CreateExposureIsoAttr/CreateExposureResponsivityAttr/CreateExposureTimeAttr.
+  Each altered Carb setting is snapshotted/restored. Camera properties are
+    authored in one dedicated anonymous session sublayer and removed together;
+    existing authored values and time samples are preserved. No global
+    preferences, saved stage render settings or other environment USDs change.
+
+Reference composition and review
+  https://cdn.polyhaven.com/collections/pine_forest.png?width=580&quality=95
+  Eye1.25–1.5m AGL, horizontal FOV about65 degrees (36mm aperture/28mm focal),
+    forward azimuth60–65 degrees when sun is45 degrees. Look12–16m forward,
+    0.3–0.6m above the eye, roll0. Pick a shallow open gully rather than the
+    takeoff pad. The reference places golden sun upper-right, dark near trees,
+    atmospheric distant stems, and detailed moss/ferns/roots/rocks across the
+    bottom half. Comparison priorities are values/colour, shaft visibility,
+    fine ground silhouettes, and depth layers, not an invented exact camera.
+
+CPU checks
+  Six tests in test_lighting.py passed against Isaac6.0 bundled USD libraries:
+    seam-safe solar extraction and energy accounting; exact sun/dome transform
+    alignment and single-dome construction; no-op for other environments;
+    settings rollback; full camera property/time-sample restoration.
+  No GPU/simulator run was started by the lighting agent. Rendering quality,
+    atmosphere scale, exposure brightness, and RTF still need serial GPU trials
+    by the parent agent; the figures above are asset analysis, not benchmarks.
+
+Renderer observations supplied by the parent's serial trials
+  iteration_04: generic UsdGeom.Camera exposure=2,4,6 did not measurably change
+    brightness. Its baseline RGB mean=(23.02,24.20,21.42), exposure4 mean=
+    (23.00,24.20,21.43). Camera time/fStop changes did work in an earlier trial.
+    The installed OmniRtxCameraExposureAPI_1 schema at generatedSchema.usda
+    lines550–588 and Python mapping at rtx/__init__.py lines97–100 contain
+    time,fStop,iso,responsivity only. Generic USD exposure compensation exists
+    in the core USD schema but is not demonstrated to work in this RTX path.
+    Use explicit ISO=100*2**EV (400 for+2,1600 for+4) for a controlled fixed
+    gain comparison; author omni:rtx:autoExposure:enabled=False on each camera.
+    This finding supersedes an assumption that generic exposure compensation
+    would work simply because the current USD API exposes the attribute.
+  With narrowed crowns and corrected camera aim, GI5 remained visually close
+    to baseline. Volumetric fog produced visible localized shafts and depth,
+    but diagnostic RTF fell from.773 to.674 with the extra580x326 product.
+    A16-slice,pixelRatio32 trial is proposed, not yet measured. These diagnostic
+    timings are not the required final acceptance benchmark.
+  iteration_05 verified exposure:iso is consumed: ISO100 baseline RGB mean
+    (23.0,24.3,21.4), near-black fraction54.3%; ISO1600 mean(78.6,87.4,68.0),
+    near-black fraction0.37%. Diagnostic RTF was.794 baseline/.800 ISO1600,
+    showing no measurable gain-related cost in this short comparison. ISO6400
+    mean(142.6,154.7,129.3) made the floor excessively bright. The selected
+    default is ISO1600 for all cameras, with time/fStop unchanged; default
+    renderer remains realtime until the atmosphere/material comparisons pass.
+    These observations concern scene exposure, not sensor spectral/noise
+    calibration. The tested material-overlay ordering still needs confirmation
+    before attributing the pictured ground appearance to the final shader.
+
+Final selection after serial reference comparisons
+  iteration_07 completed all requested quality comparisons. With the extra
+  580x326 product and four production cameras: realtime0.7719, GI5 0.7715,
+  uncached0.7950, volume0.7416, fast-volume0.7487, haze0.7651, interactive
+  path tracing0.02156 RTF (10 simulated seconds /463.83 wall seconds).
+  PT's sampled image was softer, with more clipped pixels; its cost is about
+  37 times uncached. It is excluded from normal operation.
+  iteration_08 on the rebuilt varied-age scene: realtime0.7794,
+  uncached_haze0.7846, quarter-density volumetric_light0.7554. The uncached
+  versus cached timing difference is unresolved short-run noise. Uncached
+  crown bounce was useful; distance haze preserved foreground contrast.
+  Even quarter-density volume produced a cool, nearly uniform foreground
+  veil rather than the reference's golden shafts, so volume was dropped.
+  Production DEFAULT_PRESET is uncached_haze: RT2, five bounces, radiance cache
+  off, light cache on, mild distance haze, fixed ISO1600 for every camera.
+  Final2x60-second acceptance timings are in artifacts/forest_pine_hills/REPORT.txt;
+  these diagnostic timings must not be substituted for those acceptance runs.
+
+Researched but not enabled
+  https://docs-prod.omniverse.nvidia.com/materials-and-rendering/latest/rtx-renderer_common.html
+  Installed common_widgets.py agrees that automatic geometry streaming/LOD
+  uses UJITSO startup configuration (omni.ujitso.client, UJITSO/enabled,
+  persistent/UJITSO/geometry) and requires restart. The documented instance
+  primvar restrictions complicate this scene's material workflow. We retained
+  native instancing and static radial ground-cover density tiers instead;
+  these are NOT camera-distance LOD or runtime culling. No cost measurement is
+  claimed for an unexecuted UJITSO configuration.
+  /rtx/material/enableMDLDisplacement is a stage-reload feature and can add
+  substantial OmniSurface cost. It would also offset render geometry without
+  the matching collider/GT surface. The retained 25cm terrain mesh, root scans,
+  rocks and tiled normals supply actual relief and detail; shader displacement
+  and tessellation were not enabled or assigned a measured speed cost.

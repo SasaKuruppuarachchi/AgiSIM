@@ -1,0 +1,52 @@
+FOREST_PINE_HILLS — terrain and agipix_auto handover
+
+World coordinates are metres, Z up, with the take-off pad at world Z=0.
+Vehicle spawn is (0,0,0.07). These are world heights, not AGL or PX4 NED.
+The terrain and its triangle-mesh collider share the same 401 x 401 vertices
+and 320,000 triangles at 0.25 m spacing over X/Y [-50,50] m.
+Seed 2026 ground heights: -4.349 to 9.087 m; relief 13.435 m. Maximum actual
+triangle slope 28.5 degrees (gradient 0.543); 95th percentile 17.56 degrees.
+The nominal flat pad radius is 3.8 m, blending to the hills by radius 11 m.
+The verification explicitly checks a completely flat radius 3 m and no mature
+stem surface within 4 m. Roots/logs/rocks and low branches still need avoidance.
+
+Suggested first terrain-following scan: X/Y [-12,12] m, then expand to
+[-22,22] m after checking the live terrain estimate and obstacle avoidance.
+The larger 44 x44 m rectangle has ground Z=-3.874..5.421 m. Allowing a 4 m
+route margin, the [-26,26] rectangle has ground Z=-4.122..7.011 m.
+Use short polyline segments (at most 5 m) and the existing forest planner
+configuration. The drawing is a coverage corridor, not a collision-free path.
+The trees and understory require the planner's lateral relocation/avoidance.
+
+Relevant keys verified in the local agipix_auto README and mission profile:
+  auto.waypoint_height_mode: agl
+  auto.area_scan.enable: true
+  auto.area_scan.target_agl: 2.5
+  auto.area_scan.min_agl: 1.7
+  auto.area_scan.max_agl: 3.7
+  auto.area_scan.terrain_max_slope: 0.56
+  auto.waypoint_spacing: 5.0
+  auto.bounds_min: [-26.0, -26.0, -2.7]
+  auto.bounds_max: [26.0, 26.0, 11.0]
+
+The bounds Z values are absolute world heights even when waypoint Z is AGL.
+Do not reuse FOREST_FI's narrow absolute vertical bounds or a constant world-Z
+flight plane. The default terrain_max_slope 0.4 is below this world's steepest
+ground; 0.56 covers the authored mesh, but its online estimation behaviour in
+this forest still needs a dedicated autonomy test. The ideal-GT-aided PX4
+clearing flight recorded separately is not such a terrain-following test.
+
+Monitor /drone0/auto/status: area_scan, terrain_conf, terrain_ground, agl,
+band_lo/band_hi, relocation and waypoint_index. Inspect the ground estimate
+before expanding into the eastern ridge/gully or dense low spruce cover.
+The GT files are evaluation data; the online terrain estimator should continue
+to use its lidar observations rather than reading the GT heightfield.
+
+Local source references:
+  scripts/forest_pine_hills/terrain.py
+  artifacts/forest_pine_hills/build/forest_pine_hills_stand.json
+  /home/sasa/workspace/agipix_control/src/agipix_autonomy/agipix_auto/README.md
+  /home/sasa/workspace/agipix_control/src/agipix_autonomy/agipix_auto/config/profiles/gt_forest_human_scan.yaml
+
+This note proposes configuration; no autonomy profile, controller, ROS
+publisher, lidar mount or physics time step was changed by this environment task.

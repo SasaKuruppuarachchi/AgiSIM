@@ -23,7 +23,7 @@ class ChaseCameraSettings:
 
 # Indoor corridors and rooms: a 4 m boom puts the camera behind walls, so sit closer and lower.
 INDOOR_SETTINGS = ChaseCameraSettings(distance=2.0, height=0.9, pitch_degrees=20.0)
-OUTDOOR_ENVIRONMENTS = frozenset({"FOREST_FI"})
+OUTDOOR_ENVIRONMENTS = frozenset({"FOREST_FI", "FOREST_SNOW", "FOREST_MID_SNOW", "FOREST_PINE_HILLS"})
 
 
 def settings_for_environment(environment):

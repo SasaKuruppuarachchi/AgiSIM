@@ -64,6 +64,25 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("physics dt must be a finite positive number", result.stderr)
 
+    def test_forest_is_available_in_headless_and_gui_plans(self) -> None:
+        cases = [(env, flags) for env in ("FOREST_SNOW", "FOREST_MID_SNOW", "FOREST_PINE_HILLS")
+                 for flags in (("--headless",), ("--gui", "--splat-mode"))]
+        for env, flags in cases:
+            with self.subTest(environment=env, flags=flags):
+                result = self.run_cli("--environment", env, *flags, "--print-command")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+                plan = json.loads(plan_text)
+                command = shlex.split(command_text.splitlines()[0])
+                self.assertEqual(plan["environment"], env)
+                self.assertTrue(plan["environment_asset"].endswith(f"isaac_envs/{env.lower()}.usd"))
+                self.assertTrue(plan["environment_asset_exists"])
+                self.assertEqual(command[command.index("--environment") + 1], env)
+                self.assertEqual(plan["chase_cam"], "--gui" in flags)
+                self.assertEqual(plan["physics_dt"], 0.004)
+                self.assertTrue(plan["lidar_timestamps"])
+                self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
+
     def test_chase_camera_switches_reach_the_canonical_script(self) -> None:
         for options, enabled, headless, disabled_flag in (
             ((), False, True, False),

@@ -67,6 +67,9 @@ FLAT_ENVIRONMENTS = {
     # Finnish managed boreal stand (pine/spruce/birch, 100 x 100 m, spawn clearing at the origin),
     # built by scripts/build_forest_fi.py; mesh trees, so RTX lidar works with motion BVH on
     "FOREST_FI": WORLDS_ASSETS + "/isaac_envs/forest_fi.usd",
+    "FOREST_SNOW": WORLDS_ASSETS + "/isaac_envs/forest_snow.usd",
+    "FOREST_MID_SNOW": WORLDS_ASSETS + "/isaac_envs/forest_mid_snow.usd",
+    "FOREST_PINE_HILLS": WORLDS_ASSETS + "/isaac_envs/forest_pine_hills.usd",
 }
 
 OMNIVERSE_ENVIRONMENTS = {

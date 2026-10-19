@@ -40,12 +40,15 @@ _thread_settings = carb.settings.get_settings()
 if _bootstrap_args.splat_mode:
     _thread_settings.set_bool("/rtx/post/motionblur/enabled", False)
 _previous_physics_threads = _thread_settings.get("/persistent/physics/numThreads")
+_environment_render_scope = None
 _thread_settings.set_int(
     "/persistent/physics/numThreads", int(os.environ.get("AGIPIX_PHYSICS_THREADS", "0"))
 )
 
 
 def restore_thread_settings():
+    if _environment_render_scope is not None:
+        _environment_render_scope.restore()
     if _previous_physics_threads is not None:
         _thread_settings.set_int("/persistent/physics/numThreads", _previous_physics_threads)
 
@@ -125,6 +128,7 @@ class AgipixApp:
         self.isaac_imu = None
         self._cb_physics = None
         self._owned_backends = []
+        self._render_scope = None
 
         self._setup_world()
         self._spawn_vehicle()
@@ -148,6 +152,9 @@ class AgipixApp:
                 settings_for_environment(self.environment),
             )
 
+        if self._render_scope is not None:
+            self._render_scope.fix_camera_exposure(self.stage)
+
         # Register physics step callback with SimulationManager
         self._cb_physics = SimulationManager.register_callback(
             self.physics_step, SimulationEvent.PHYSICS_POST_STEP
@@ -164,6 +171,17 @@ class AgipixApp:
         # Compose the scene before vehicle/RTX sensor creation. The asynchronous
         # GUI loader can otherwise race sensor initialization in standalone runs.
         self.pg.load_asset(FLAT_ENVIRONMENTS[self.environment], "/World/layout")
+        # This environment's renderer choices are reversible and have no frame
+        # callback. The common shutdown hook also covers construction failures.
+        global _environment_render_scope
+        if _environment_render_scope is not None:
+            _environment_render_scope.restore()
+        if self.environment == "FOREST_PINE_HILLS":
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+            from forest_pine_hills.runtime import ScopedRenderSettings
+            self._render_scope = ScopedRenderSettings(self.environment)
+            _environment_render_scope = self._render_scope
+            self._render_scope.apply()
         print("AGIPIX_ENVIRONMENT_LOADED=" + self.environment, flush=True)
 
     def _build_vehicle_config(self):
@@ -362,6 +380,11 @@ class AgipixApp:
                     self.node.publish_timeline_state(self.timeline, sim_time)
         finally:
             cleanup_errors = []
+            if self._render_scope is not None:
+                try:
+                    self._render_scope.restore()
+                except Exception as error:
+                    cleanup_errors.append(error)
             if self._splat_recorder is not None:
                 try:
                     self._splat_recorder.close()

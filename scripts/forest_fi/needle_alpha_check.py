@@ -10,6 +10,7 @@ points that do not exist.
     python3 scripts/forest_fi/needle_alpha_check.py ASSETS_SRC_DIR OUT.json
 """
 import json
+import argparse
 import os
 import sys
 
@@ -35,7 +36,12 @@ CASES = [  # (asset, material, alpha mask file)
 
 
 def main():
-    src, out = sys.argv[1], sys.argv[2]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("src")
+    parser.add_argument("out")
+    parser.add_argument("--protos", help="Also check the processed, decimated conifer NPZ prototypes")
+    args = parser.parse_args()
+    src, out = args.src, args.out
     rng = np.random.default_rng(0)
     res = {}
     for asset, mat, mask in CASES:
@@ -73,6 +79,42 @@ def main():
         res[asset] = {"material": mat, "tris": tris, "surface_m2": round(tot_area, 2),
                       "opaque_fraction": round(opaque / tot_area, 3)}
         print(asset, res[asset], flush=True)
+    if args.protos:
+        from pathlib import Path
+        from protos import load_proto
+        masks = {}
+        for asset, material, mask in CASES[:5]:
+            masks[material] = np.asarray(Image.open(os.path.join(src, "polyhaven", asset, "alpha", mask))
+                                        .convert("L"), np.float32) / 255
+        processed = {}
+        for path in sorted(Path(args.protos).glob("*.npz")):
+            if not path.stem.startswith(("pine_", "spruce_", "sap_", "uspruce_")):
+                continue
+            parts, _ = load_proto(str(path))
+            areas, fractions = [], []
+            for part in parts:
+                if part.mat not in masks:
+                    continue
+                V, I, T = part.V, part.F, part.UV
+                ar = .5 * np.linalg.norm(np.cross(V[I[:, 1]] - V[I[:, 0]], V[I[:, 2]] - V[I[:, 0]]), axis=1)
+                if not ar.sum():
+                    continue
+                t = rng.choice(len(I), 100000, p=ar.astype(float) / ar.sum(dtype=float))
+                s, r = np.sqrt(rng.random(len(t))), rng.random(len(t))
+                uv = ((1-s)[:, None] * T[I[t, 0]] + (s*(1-r))[:, None] * T[I[t, 1]]
+                      + (s*r)[:, None] * T[I[t, 2]])
+                a = masks[part.mat]
+                H, W = a.shape
+                px = np.clip((np.mod(uv[:, 0], 1) * W).astype(int), 0, W-1)
+                # NPZ UVs were converted to USD's bottom-left convention.
+                py = np.clip((np.mod(1 - uv[:, 1], 1) * H).astype(int), 0, H-1)
+                areas.append(float(ar.sum()))
+                fractions.append(float((a[py, px] >= .5).mean()))
+            if areas:
+                processed[path.stem] = dict(surface_m2=sum(areas),
+                                            opaque_fraction=float(np.average(fractions, weights=areas)))
+        res["processed_conifer_prototypes"] = processed
+        print("processed conifer prototypes:", json.dumps(processed), flush=True)
     json.dump(res, open(out, "w"), indent=1)
 
 

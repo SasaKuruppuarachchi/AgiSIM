@@ -84,10 +84,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--usd", default=os.path.join(ENVS, "forest_fi.usd"))
     ap.add_argument("--out-dir", default=OUT)
+    ap.add_argument("--name", default="forest_fi", help="Output/stand prefix (e.g. forest_snow)")
     ap.add_argument("--res", type=float, default=0.1)
     ap.add_argument("--robot-r", type=float, default=0.25)
     ap.add_argument("--isaacsim", default="~/isaacsim")
     a = ap.parse_args()
+    if not a.name.replace("_", "").isalnum():
+        ap.error("--name must be alphanumeric with optional underscores")
     bootstrap(a.isaacsim)
     import numpy as np
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -109,7 +112,7 @@ def main():
         rinv = np.linalg.inv(rm)
         by_role = {}
         for p in Usd.PrimRange(root, Usd.PrimAllPrimsPredicate):
-            if not p.IsA(UsdGeom.Mesh):
+            if not p.IsActive() or not p.IsA(UsdGeom.Mesh):
                 continue
             mesh = UsdGeom.Mesh(p)
             V = np.asarray(mesh.GetPointsAttr().Get(), np.float64)
@@ -139,6 +142,8 @@ def main():
                 if role in ("trunk", "deadwood"):
                     tr_codes.append(c)
             n_inst += 1
+            if n_inst % 200 == 0:
+                print(f"voxelized {n_inst} instances ({len(proto_samples)} cached prototypes)", flush=True)
         elif p.IsA(UsdGeom.Mesh) and p.GetPath().pathString.startswith("/World/Terrain"):
             mesh = UsdGeom.Mesh(p)
             V = np.asarray(mesh.GetPointsAttr().Get(), np.float64)
@@ -157,14 +162,14 @@ def main():
     TR = unpack(np.unique(np.concatenate(tr_codes)))
     src = dict(stage=os.path.abspath(a.usd), stage_sha256=hashlib.sha256(open(a.usd, "rb").read()).hexdigest(),
                instances=n_inst, sample_step_m=step)
-    write_vox(os.path.join(a.out_dir, "forest_fi_gt.voxels"), GT, res,
+    write_vox(os.path.join(a.out_dir, f"{a.name}_gt.voxels"), GT, res,
               dict(source=src, content="render geometry: terrain, trunks, branches, foliage, understory, rocks, deadwood",
                    voxels_per_role_before_union=per_role))
-    write_vox(os.path.join(a.out_dir, "forest_fi_trunks.voxels"), TR, res,
+    write_vox(os.path.join(a.out_dir, f"{a.name}_trunks.voxels"), TR, res,
               dict(source=src, content="trunk render meshes (trees, understory spruce) + logs + stumps"))
 
     # ---------------------------------------------------------------- statistics
-    stand = json.load(open(os.path.join(a.out_dir, "forest_fi_stand.json")))
+    stand = json.load(open(os.path.join(a.out_dir, f"{a.name}_stand.json")))
     from scene import TerrainZ
     T = TerrainZ(stand["terrain"])
     trees = stand["trees"]
@@ -182,7 +187,7 @@ def main():
                  height_m=dict(mean=float(hgt.mean()), sd=float(hgt.std()), min=float(hgt.min()), max=float(hgt.max())),
                  basal_area_m2_per_ha=float((np.pi * (dbh / 200) ** 2).sum() / area_ha),
                  crown_base_m={s: dict(mean=float(cb[sp == s].mean()), min=float(cb[sp == s].min()),
-                                       max=float(cb[sp == s].max())) for s in ("pine", "spruce", "birch")},
+                                       max=float(cb[sp == s].max())) for s in ("pine", "spruce", "birch") if (sp == s).any()},
                  spruce_skirts={k: sum(1 for t in trees if len(t.get("skirts", [])) == k) for k in (0, 1, 2)},
                  understory={}, distinct_triangles=stand["summary"]["distinct_triangles"])
     for o in objs:
@@ -252,7 +257,7 @@ def main():
             Gocc25 = G[:, :, int(math.floor((2.5 - lo) / res))]
     stats["free_space_robot_r"] = rr
     stats["free_space"] = free
-    json.dump(stats, open(os.path.join(a.out_dir, "forest_fi_stats.json"), "w"), indent=1)
+    json.dump(stats, open(os.path.join(a.out_dir, f"{a.name}_stats.json"), "w"), indent=1)
 
     # -------------------------------------------------------------------- checks
     checks = {}
@@ -278,6 +283,10 @@ def main():
     for p in Usd.PrimRange(stage.GetPrimAtPath("/World/Forest/Colliders/Trunks")):
         if p.IsA(UsdGeom.Cylinder):
             cyl_by_tree.setdefault(p.GetName().rsplit("_s", 1)[0], []).append(p)
+        elif p.IsA(UsdGeom.Mesh) and p.HasAPI(UsdPhysics.CollisionAPI):
+            tree_id = p.GetCustomDataByKey("tree_id")
+            if tree_id:
+                cyl_by_tree.setdefault(tree_id, []).append(p)
     missing = [t["id"] for t in trees if t["id"] not in cyl_by_tree]
     # compare collider radius with the render trunk at 1.3 m and 2.5 m AGL (trunk voxels ring)
     ratios = []
@@ -319,7 +328,7 @@ def main():
     checks["pass"] = bool(checks["terrain_z_origin"] == 0.0 and checks["terrain_max_abs_z_within_3m"] < 1e-9
                           and checks["nearest_stem_surface_m"] >= 4.0 and not missing and not foliage_with_collider
                           and not collider_meshes_in_protos)
-    json.dump(checks, open(os.path.join(a.out_dir, "forest_fi_checks.json"), "w"), indent=1)
+    json.dump(checks, open(os.path.join(a.out_dir, f"{a.name}_checks.json"), "w"), indent=1)
     print(json.dumps(checks, indent=1))
 
     # ------------------------------------------------------------------- figures
@@ -350,7 +359,7 @@ def main():
     ax[0].set_ylim(-50, 50)
     ax[0].set_aspect("equal")
     ax[0].legend(loc="upper right", fontsize=7, ncol=2)
-    ax[0].set_title(f"forest_fi top view: {len(trees)} stems/ha, terrain {Z.min():.2f}..{Z.max():.2f} m "
+    ax[0].set_title(f"{a.name} top view: {len(trees)} stems/ha, terrain {Z.min():.2f}..{Z.max():.2f} m "
                     "(crown discs indicative)")
     n = D25.shape[0]
     img = np.zeros((n, n, 3))
@@ -362,7 +371,7 @@ def main():
     ax[1].set_title(f"2.5 m AGL slice: occupied (black), within {rr} m (orange), flyable (white) "
                     f"= {free['gt']['flyable_frac_at_agl']['2.5'] * 100:.1f} %")
     fig.tight_layout()
-    fig.savefig(os.path.join(a.out_dir, "forest_fi_topview.png"), dpi=110)
+    fig.savefig(os.path.join(a.out_dir, f"{a.name}_topview.png"), dpi=110)
     plt.close(fig)
 
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6))
@@ -382,7 +391,7 @@ def main():
     ax[2].legend(fontsize=8)
     ax[2].set_title("sub-canopy vertical profile")
     fig.tight_layout()
-    fig.savefig(os.path.join(a.out_dir, "forest_fi_stand_stats.png"), dpi=110)
+    fig.savefig(os.path.join(a.out_dir, f"{a.name}_stand_stats.png"), dpi=110)
     plt.close(fig)
     print(json.dumps({k: v for k, v in stats.items() if k != "vertical_profile"}, indent=1))
 

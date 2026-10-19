@@ -12,7 +12,8 @@ def angle_difference(a, b):
 
 class ChaseCameraMotionTest(unittest.TestCase):
     def test_indoor_environments_use_the_closer_boom(self):
-        self.assertEqual(settings_for_environment("FOREST_FI"), ChaseCameraSettings())
+        for env in ("FOREST_FI", "FOREST_SNOW", "FOREST_MID_SNOW", "FOREST_PINE_HILLS"):
+            self.assertEqual(settings_for_environment(env), ChaseCameraSettings())
         for env in ("AKW_C", "AKW_2F", "Hospital", "Office"):
             self.assertIs(settings_for_environment(env), INDOOR_SETTINGS)
         self.assertLess(INDOOR_SETTINGS.distance, ChaseCameraSettings().distance)

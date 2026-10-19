@@ -1,0 +1,167 @@
+// AgiSIM procedural material definitions. Texture inputs are verified CC0 assets.
+// Isaac Sim 6.0: uses the bundled OmniSurfaceBase and standard MDL 1.7 modules.
+mdl 1.7;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+import ::scene::*;
+import ::base::*;
+import ::OmniSurface::OmniSurfaceBase::*;
+
+float3 world_position() = state::transform_point(
+    state::coordinate_internal, state::coordinate_world, state::position());
+float3 world_normal() = math::normalize(state::transform_normal(
+    state::coordinate_internal, state::coordinate_world, state::normal()));
+
+color tile(uniform texture_2d image, float2 uv) = tex::lookup_color(
+    image, uv, wrap_u: tex::wrap_repeat, wrap_v: tex::wrap_repeat);
+
+// World-space projection has no UV stretching on steep rock faces. Blending uses
+// the geometric normal so normal-map detail cannot feed back into the weights.
+float3 projection_weights() = let {
+    float3 n = math::abs(state::transform_normal(state::coordinate_internal,
+        state::coordinate_world, state::geometry_normal()));
+    float3 w = n * n * n * n;
+} in w / math::max(w.x + w.y + w.z, 0.00001);
+
+color triplanar(uniform texture_2d image, uniform float period) = let {
+    float3 p = world_position() / period;
+    float3 w = projection_weights();
+} in tile(image, float2(p.y, p.z)) * w.x
+    + tile(image, float2(p.x, p.z)) * w.y
+    + tile(image, float2(p.x, p.y)) * w.z;
+
+float3 triplanar_normal(uniform texture_2d image, uniform float period) = let {
+    float3 p = world_position() / period;
+    float3 w = projection_weights();
+    float3 n = world_normal();
+    float3 x = float3(tile(image, float2(p.y, p.z))) * 2.0 - 1.0;
+    float3 y = float3(tile(image, float2(p.x, p.z))) * 2.0 - 1.0;
+    float3 z = float3(tile(image, float2(p.x, p.y))) * 2.0 - 1.0;
+    float3 a = float3(x.z * math::sign(n.x), x.x, x.y);
+    float3 b = float3(y.x, y.z * math::sign(n.y), y.y);
+    float3 c = float3(z.x, z.y, z.z * math::sign(n.z));
+} in math::normalize(state::transform_normal(state::coordinate_world,
+    state::coordinate_internal, math::normalize(a * w.x + b * w.y + c * w.z)));
+
+// Stable variation uses the renderer's existing instance transform. Distinct
+// inherited root primvars were dropped after GPU memory/RTF comparisons.
+float instance_hash(float seed) = let {
+    float3 origin = state::transform_point(state::coordinate_object,
+        state::coordinate_world, float3(0.0));
+    float x = math::sin(math::dot(origin, float3(12.9898, 78.233, 37.719)) + seed) * 43758.5453;
+} in x - math::floor(x);
+
+color transform_instance_tint() = let {
+    uniform float gain = scene::data_lookup_uniform_float("pineHillsVariationStrength", 0.14);
+    float a = 2.0 * instance_hash(0.0) - 1.0;
+    float b = 2.0 * instance_hash(19.17) - 1.0;
+    float value = 1.0 + gain * a;
+} in color(value * (1.0 + gain * .35 * b), value, value * (1.0 - gain * .55 * b));
+
+float transform_instance_wetness() = 0.05 + 0.23 * instance_hash(71.19);
+
+export material Ground(
+    uniform texture_2d needles_color = texture_2d(),
+    uniform texture_2d needles_normal = texture_2d(),
+    uniform texture_2d needles_rough = texture_2d(),
+    uniform texture_2d moss_color = texture_2d(),
+    uniform texture_2d moss_normal = texture_2d(),
+    uniform texture_2d moss_rough = texture_2d(),
+    uniform texture_2d rock_color = texture_2d(),
+    uniform texture_2d rock_normal = texture_2d(),
+    uniform texture_2d rock_rough = texture_2d(),
+    uniform float needles_period = 2.0,
+    uniform float moss_period = 2.0,
+    uniform float rock_period = 2.0,
+    uniform float detail_period = 0.22,
+    uniform bool detail_enabled = true,
+    uniform float diffuse_gain = 0.65,
+    uniform color moss_tint = color(0.48, 0.58, 0.29)
+) = let {
+    float4 w0 = scene::data_lookup_float4("pineHillsCover", float4(0.55, 0.35, 0.1, 0.0));
+    float4 w = math::max(w0, float4(0.0)) / math::max(w0.x + w0.y + w0.z + w0.w, 0.001);
+    float wet = math::clamp(scene::data_lookup_float("pineHillsWetness", 0.15), 0.0, 1.0);
+    color litter = triplanar(needles_color, needles_period);
+    color moss = triplanar(moss_color, moss_period) * moss_tint;
+    color rock = triplanar(rock_color, rock_period);
+    // Soil uses the same verified forest-floor scan, darkened/desaturated; root
+    // plates and protruding root flares are separate physical geometry.
+    color soil = (litter * 0.55 + color(math::luminance(litter)) * 0.45) * color(0.49, 0.44, 0.36);
+    color c = (litter * w.x + moss * w.y + soil * w.z + rock * w.w) * (1.0 - wet * 0.16) * diffuse_gain;
+    float rough = math::clamp(math::luminance(triplanar(needles_rough, needles_period)) * (w.x + w.z)
+        + math::luminance(triplanar(moss_rough, moss_period)) * w.y
+        + math::luminance(triplanar(rock_rough, rock_period)) * w.w - wet * 0.12, 0.48, 0.98);
+    float3 bn = math::normalize(triplanar_normal(needles_normal, needles_period) * (w.x + w.z)
+        + triplanar_normal(moss_normal, moss_period) * w.y
+        + triplanar_normal(rock_normal, rock_period) * w.w);
+    // The high-frequency detail is mip-filtered by RTX as its projected size
+    // shrinks, avoiding a camera-specific fade that would differ across sensors.
+    float3 dn = detail_enabled ? triplanar_normal(moss_normal, detail_period) : state::normal();
+    float3 n = base::blend_normals(bn, 0.72, dn, detail_enabled ? 0.17 : 0.0);
+} in ::OmniSurface::OmniSurfaceBase::OmniSurfaceBase(
+    diffuse_reflection_weight: 0.9, diffuse_reflection_color: c,
+    diffuse_reflection_roughness: 0.22,
+    specular_reflection_weight: 0.26, specular_reflection_roughness: rough,
+    specular_retro_reflection_weight: w.y * 0.17,
+    specular_retro_reflection_color: moss * 0.65,
+    specular_retro_reflection_roughness: 0.65, geometry_normal: n
+);
+
+export material Foliage(
+    uniform texture_2d diffuse_image = texture_2d(),
+    uniform texture_2d normal_image = texture_2d(),
+    uniform texture_2d orm_image = texture_2d(),
+    color tint = color(1.0),
+    uniform float translucency = 0.22,
+    uniform float normal_strength = 0.5
+) = let {
+    float3 uvw = state::texture_coordinate(0);
+    float2 uv = float2(uvw.x, uvw.y);
+    color variation = transform_instance_tint();
+    color c = tile(diffuse_image, uv) * tint * variation;
+    float rough = tex::texture_isvalid(orm_image) ? float3(tile(orm_image, uv)).y : 0.73;
+    float3 n = tex::texture_isvalid(normal_image) ? base::tangent_space_normal_texture(
+        texture: normal_image, factor: normal_strength) : state::normal();
+} in ::OmniSurface::OmniSurfaceBase::OmniSurfaceBase(
+    thin_walled: true, diffuse_reflection_weight: 0.8,
+    diffuse_reflection_color: c, diffuse_reflection_roughness: 0.12,
+    specular_reflection_weight: 0.22, specular_reflection_roughness: math::clamp(rough, 0.55, 0.95),
+    enable_diffuse_transmission: true, subsurface_weight: translucency,
+    subsurface_transmission_color: c * color(0.80, 1.0, 0.60),
+    subsurface_scattering_color: c, geometry_normal: n
+);
+
+export material Surface(
+    uniform texture_2d diffuse_image = texture_2d(),
+    uniform texture_2d normal_image = texture_2d(),
+    uniform texture_2d orm_image = texture_2d(),
+    uniform texture_2d rough_image = texture_2d(),
+    uniform texture_2d detail_normal = texture_2d(),
+    color tint = color(1.0),
+    color constant_color = color(0.2),
+    uniform float roughness = 0.83,
+    uniform float sheen = 0.0,
+    uniform float detail_weight = 0.14,
+    uniform float detail_period = 0.18
+) = let {
+    float3 uvw = state::texture_coordinate(0);
+    float2 uv = float2(uvw.x, uvw.y);
+    color variation = transform_instance_tint();
+    float wet = math::clamp(transform_instance_wetness(), 0.0, 1.0);
+    color c = (tex::texture_isvalid(diffuse_image) ? tile(diffuse_image, uv) : constant_color)
+        * tint * variation * (1.0 - wet * 0.15);
+    float r = tex::texture_isvalid(orm_image) ? float3(tile(orm_image, uv)).y :
+        (tex::texture_isvalid(rough_image) ? math::luminance(tile(rough_image, uv)) : roughness);
+    float3 bn = tex::texture_isvalid(normal_image) ? base::tangent_space_normal_texture(
+        texture: normal_image, factor: 0.85) : state::normal();
+    float3 dn = tex::texture_isvalid(detail_normal) ? triplanar_normal(detail_normal, detail_period) : state::normal();
+    float3 n = base::blend_normals(bn, 0.85, dn, detail_weight);
+} in ::OmniSurface::OmniSurfaceBase::OmniSurfaceBase(
+    diffuse_reflection_weight: 0.88, diffuse_reflection_color: c,
+    diffuse_reflection_roughness: 0.18,
+    specular_reflection_weight: 0.28, specular_reflection_roughness: math::clamp(r - wet * 0.12, 0.42, 0.98),
+    specular_retro_reflection_weight: sheen,
+    specular_retro_reflection_color: c, specular_retro_reflection_roughness: 0.68,
+    geometry_normal: n
+);
