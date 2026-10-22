@@ -122,6 +122,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(headless=True)
     parser.add_argument("--leds", action="store_true",
                         help="Enable white front/red rear navigation lights on the guard corners (default: off).")
+    parser.add_argument("--livox-imu", action="store_true",
+                        help="Publish an emulated Livox Mid-360 IMU on /<ns>/livox/imu (200 Hz, lidar axes, g units; default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
@@ -171,6 +173,8 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
         argv.append("--headless")
     if args.leds:
         argv.append("--leds")
+    if args.livox_imu:
+        argv.append("--livox-imu")
     if not args.chase_cam:
         argv.append("--no-chase-cam")
     if args.lidar_timestamps:
@@ -242,6 +246,8 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
     }
     if args.leds:
         info["leds"] = True
+    if args.livox_imu:
+        info["livox_imu"] = True
     if args.splat_mode:
         info.update(splat_mode=True, save_splat=args.save_splat, splat_depth=args.splat_depth,
                     splat_out=(str(args.splat_out.expanduser().resolve()) if args.splat_out is not None

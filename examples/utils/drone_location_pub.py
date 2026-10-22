@@ -78,6 +78,20 @@ class DroneLocationPublisher(Node):
             lidar_frame_broadcaster,
         )
 
+    def enable_livox_imu(self):
+        """Opt-in emulated Livox IMU, /<ns>/livox/imu: reliable like the Livox driver (LIOM subscribes reliable)."""
+        self._livox_imu_publisher = self.create_publisher(Imu, f"{self.vehicle_name}/livox/imu", 200)
+        self._livox_imu_frame = f"{self.vehicle_name}/lidar_link"  # the sim lidar cloud's frame
+
+    def publish_livox_imu(self, stamp_s, accel_g, gyro):
+        msg = Imu()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = ros_time_parts(stamp_s)
+        msg.header.frame_id = self._livox_imu_frame
+        msg.orientation.w = 1.0  # the Livox driver publishes no orientation
+        msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = (float(v) for v in accel_g)
+        msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = (float(v) for v in gyro)
+        self._livox_imu_publisher.publish(msg)
+
     def enable_splat_preview(self):
         """Opt-in preview only; existing publishers and mode-off topics are unchanged."""
         from sensor_msgs.msg import CompressedImage, Image

@@ -26,7 +26,7 @@ class HospitalFlight25CliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in ("--headless", "--gui", "--namespace", "--id", "--environment",
                        "--px4-dir", "--physics-dt", "--preflight", "--print-command",
-                       "--chase-cam", "--no-chase-cam", "--splat-mode", "--save-splat", "--splat-depth", "--splat-out", "--leds"):
+                       "--chase-cam", "--no-chase-cam", "--splat-mode", "--save-splat", "--splat-depth", "--splat-out", "--leds", "--livox-imu"):
             self.assertIn(option, result.stdout)
         self.assertNotIn("AGIPIX_ENVIRONMENT_LOADED", result.stdout)
 
@@ -105,6 +105,18 @@ class HospitalFlight25CliTest(unittest.TestCase):
         result = self.run_cli("--print-command")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("splat", result.stdout)
+
+    def test_livox_imu_default_off_and_reaches_canonical_script_when_enabled(self) -> None:
+        for flags in ((), ("--livox-imu",), ("--splat-mode", "--livox-imu")):
+            with self.subTest(flags=flags):
+                result = self.run_cli(*flags, "--print-command")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan_text, command_text = result.stdout.split("\nLaunch command (cleaned environment):\n")
+                plan = json.loads(plan_text)
+                command = shlex.split(command_text.splitlines()[0])
+                enabled = "--livox-imu" in flags
+                self.assertEqual(plan.get("livox_imu", False), enabled)
+                self.assertEqual("--livox-imu" in command, enabled)
 
     def test_leds_default_off_and_reach_canonical_script_when_enabled(self) -> None:
         for flags in ((), ("--leds",), ("--gui", "--leds"), ("--splat-mode", "--leds")):

@@ -90,7 +90,7 @@ class AgipixApp:
     def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
                  lidar_timestamps=False, environment="AKW_C", px4_dir=None,
                  gui=False, chase_cam=True, splat_mode=False, splat_depth=False, splat_out=None,
-                 save_splat=False, leds=False):
+                 save_splat=False, leds=False, livox_imu=False):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
@@ -129,6 +129,8 @@ class AgipixApp:
         self._cb_physics = None
         self._owned_backends = []
         self._render_scope = None
+        self._livox_imu_enabled = livox_imu
+        self._livox_imu = None
 
         self._setup_world()
         self._spawn_vehicle()
@@ -304,9 +306,27 @@ class AgipixApp:
 
         simulation_app.update()
         self.create_imu_sensor()
+        if self._livox_imu_enabled:
+            self.create_livox_imu()
 
         self.stage = omni.usd.get_context().get_stage()
         self.drone_prim = self.stage.GetPrimAtPath(self.drone._stage_prefix + "/body")
+
+    def create_livox_imu(self):
+        """Emulated Livox Mid-360 internal IMU (agipix_livox_imu.py): computed analytically from the
+        vehicle state every physics step at the manual's position inside the Mid-360, in the lidar's
+        axes, published at 200 Hz of sim time. No Isaac IMU prim (its IMUSensor drops omega x v)."""
+        import dataclasses
+        from agipix_livox_imu import LivoxImuEmulator, LivoxImuSettings, imu_position_in_body
+
+        # AGIPIX_LIVOX_IMU_VIBRATION: scale of the coloured prop vibration fitted to the real in-flight
+        # spectrum above 8 Hz (default 1.0 = real; 0 = clean sensor).
+        settings = dataclasses.replace(LivoxImuSettings(),
+                                       vibration_scale=float(os.environ.get("AGIPIX_LIVOX_IMU_VIBRATION", "1.0")))
+        position = imu_position_in_body(self.lidar_trans, self.lidar_ori, settings.position_in_lidar)
+        self.node.enable_livox_imu()
+        self._livox_imu = LivoxImuEmulator(self.node.publish_livox_imu, self.lidar_ori, position, settings)
+        carb.log_info("Livox IMU emulation at body " + str(position.round(4).tolist()))
 
     def create_imu_sensor(self):
         self.isaac_imu = IMUSensor(
@@ -325,6 +345,12 @@ class AgipixApp:
         current_sim_time = SimulationManager.get_simulation_time()
         current_time = time.time()
         self.node.publish_clock(current_sim_time)
+        if self._livox_imu is not None:
+            # Props spinning (any rotor thrust) gates the optional in-flight vibration noise.
+            spinning = sum(abs(float(f)) for f in self.drone.forces) > 0.5
+            st = self.drone._state
+            self._livox_imu.step(current_sim_time, Rotation.from_quat(st.attitude).as_matrix(),
+                                 st.linear_velocity, st.angular_velocity, armed=spinning)
 
         if self.physics_stp_cnt == 0:
             if self.sim_elapsed_time is None:
@@ -427,6 +453,8 @@ def parse_cli_args():
     parser.add_argument("--headless", action="store_true", help="Run without the Isaac Sim window.")
     parser.add_argument("--leds", action="store_true",
                         help="Enable white front/red rear navigation lights on the guard corners (default: off).")
+    parser.add_argument("--livox-imu", action="store_true",
+                        help="Publish an emulated Livox Mid-360 IMU on /<ns>/livox/imu (200 Hz, lidar axes, g units; default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
@@ -478,7 +506,7 @@ def main():
             lidar_timestamps=args.lidar_timestamps, environment=args.environment, px4_dir=args.px4_dir,
             gui=not args.headless, chase_cam=args.chase_cam,
             splat_mode=args.splat_mode, splat_depth=args.splat_depth, splat_out=args.splat_out,
-            save_splat=args.save_splat, leds=args.leds,
+            save_splat=args.save_splat, leds=args.leds, livox_imu=args.livox_imu,
         )
         app.run()
     finally:

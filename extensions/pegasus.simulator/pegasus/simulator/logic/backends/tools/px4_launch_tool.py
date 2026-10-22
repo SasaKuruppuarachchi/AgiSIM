@@ -116,6 +116,24 @@ class PX4LaunchTool:
             else:
                 process.wait()
             self.px4_process = None
+            self._keep_logs()
+
+    def _keep_logs(self):
+        """Copy the PX4 ulogs out of the temporary rootfs before it is cleaned up.
+        AGIPIX_PX4_LOG_DIR (default ~/agipix_px4_logs; empty string disables)."""
+        target = os.environ.get("AGIPIX_PX4_LOG_DIR", os.path.expanduser("~/agipix_px4_logs"))
+        source = Path(self.root_fs.name) / "log"
+        if not target or not source.is_dir():
+            return
+        import shutil
+        try:
+            for ulog in source.rglob("*.ulg"):
+                destination = Path(target) / ulog.parent.name / ulog.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.exists():
+                    shutil.copy2(ulog, destination)
+        except OSError as error:
+            print("PX4 log copy failed: " + str(error), flush=True)
 
     def __del__(self):
         """
