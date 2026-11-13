@@ -218,7 +218,8 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
         "ISAAC_ROS_ENV_SCRIPT": str(ISAAC_ROS_ENV_SCRIPT),
         "PEGASUS_SIMULATOR_PATH": str(PEGASUS_EXTENSION),
         "CANONICAL_SCRIPT": str(CANONICAL_SCRIPT),
-        "ROS_DOMAIN_ID": "5",
+        # Per-machine override keeps a desk sim off the drone's domain (5).
+        "ROS_DOMAIN_ID": os.environ.get("AGIPIX_ROS_DOMAIN_ID", "5"),
         "ROS_LOCALHOST_ONLY": "0",
         "ISAACSIM_ROS_DISTRO": "humble",
         "ISAACSIM_ROS_RMW": "rmw_cyclonedds_cpp",
