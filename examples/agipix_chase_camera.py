@@ -87,21 +87,28 @@ class ChaseCameraMotion:
         return True
 
 
+CHASE_PRIM_PATH = "/World/ChaseCamera"
+
+
 class ChaseCamera:
     """Own a standalone USD camera and select it in the existing GUI viewport."""
 
-    PRIM_PATH = "/World/ChaseCamera"
+    PRIM_PATH = CHASE_PRIM_PATH
 
-    def __init__(self, stage, vehicle_prim_path, simulation_time, settings=None):
+    def __init__(self, stage, vehicle_prim_path, simulation_time, settings=None,
+                 prim_path=CHASE_PRIM_PATH, bind_viewport=True):
         # Kept here so headless runs never import viewport/camera support.
-        from omni.kit.viewport.utility import get_active_viewport
         from pxr import Gf, Usd, UsdGeom
 
         self._gf = Gf
         settings = settings or ChaseCameraSettings()
-        viewport = get_active_viewport()
-        if viewport is None:
-            raise RuntimeError("Chase camera requires an active GUI viewport")
+        viewport = None
+        if bind_viewport:
+            from omni.kit.viewport.utility import get_active_viewport
+
+            viewport = get_active_viewport()
+            if viewport is None:
+                raise RuntimeError("Chase camera requires an active GUI viewport")
 
         # Pegasus' State is still zero-initialized before the first physics step.
         # Read the authored spawn pose once, including its actual initial heading.
@@ -111,7 +118,9 @@ class ChaseCamera:
         self.motion = ChaseCameraMotion(world.ExtractTranslation(), math.atan2(heading[1], heading[0]),
                                         simulation_time, settings)
 
-        camera = UsdGeom.Camera.Define(stage, self.PRIM_PATH)
+        # Define() keeps an existing prim, e.g. an RtxCamera created for headless video.
+        self.prim_path = prim_path
+        camera = UsdGeom.Camera.Define(stage, prim_path)
         camera.CreateProjectionAttr(UsdGeom.Tokens.perspective)
         aperture = 20.955
         camera.CreateHorizontalApertureAttr(aperture)
@@ -123,7 +132,8 @@ class ChaseCamera:
         xform.SetResetXformStack(True)  # Pose is in world coordinates, even if /World is transformed.
         self._transform = xform.AddTransformOp()
         self._write_pose()
-        viewport.camera_path = self.PRIM_PATH
+        if viewport is not None:
+            viewport.camera_path = prim_path
 
     def _write_pose(self):
         gf = self._gf

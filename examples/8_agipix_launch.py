@@ -124,11 +124,15 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Enable white front/red rear navigation lights on the guard corners (default: off).")
     parser.add_argument("--livox-imu", action="store_true",
                         help="Publish an emulated Livox Mid-360 IMU on /<ns>/livox/imu (200 Hz, lidar axes, g units; default: off).")
+    parser.add_argument("--flow", action="store_true",
+                        help="Emulate the ARK Flow MR (PAA3905 flow + AFBR-S50 ToF) into PX4 and apply its "
+                             "EKF2/SENS_FLOW parameter set (examples/agipix_flow.py; default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
     parser.add_argument("--splat-mode", action="store_true",
-                        help="Replace RealSense with four setting-H fisheyes and a stitched 10 Hz panorama preview.")
+                        help="Replace RealSense with the four OV9782-W fisheyes (AGIPIX_CAMERA_MOUNTS: landing_gear "
+                             "(default) or setting_h) and a stitched 10 Hz panorama preview.")
     parser.add_argument("--save-splat", action="store_true",
                         help="Write the full-resolution splat dataset to disk (default: off; requires --splat-mode).")
     parser.add_argument("--splat-depth", action="store_true",
@@ -136,6 +140,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--splat-out", type=Path,
                         help="New dataset directory; requires --save-splat "
                              "(default: ~/agipix_splat/<environment>_<timestamp>).")
+    parser.add_argument("--record-video", type=Path, metavar="DIR",
+                        help="Record a 10 Hz chase view plus the four onboard cameras into a new DIR "
+                             "(requires --splat-mode; compose with examples/agipix_video_compose.py).")
     parser.add_argument("--namespace", default="drone", help="Vehicle namespace prefix (default: drone).")
     parser.add_argument("--id", dest="vehicle_id", type=_nonnegative_id, default=0,
                         help="Vehicle ID appended to namespace (default: 0).")
@@ -175,6 +182,8 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
         argv.append("--leds")
     if args.livox_imu:
         argv.append("--livox-imu")
+    if args.flow:
+        argv.append("--flow")
     if not args.chase_cam:
         argv.append("--no-chase-cam")
     if args.lidar_timestamps:
@@ -187,6 +196,8 @@ def _canonical_args(args: argparse.Namespace, passthrough: list[str]) -> list[st
             argv.append("--splat-depth")
         if args.splat_out is not None:
             argv.extend(["--splat-out", str(args.splat_out.expanduser().resolve())])
+        if args.record_video is not None:
+            argv.extend(["--record-video", str(args.record_video.expanduser().resolve())])
     # Match the successful Flight 26 Isaac renderer/asset-root settings.
     argv.extend([
         "--/renderer/multiGpu/enabled=false",
@@ -249,6 +260,8 @@ def _launch_plan(args: argparse.Namespace, passthrough: list[str]) -> tuple[list
         info["leds"] = True
     if args.livox_imu:
         info["livox_imu"] = True
+    if args.flow:
+        info["flow"] = True
     if args.splat_mode:
         info.update(splat_mode=True, save_splat=args.save_splat, splat_depth=args.splat_depth,
                     splat_out=(str(args.splat_out.expanduser().resolve()) if args.splat_out is not None

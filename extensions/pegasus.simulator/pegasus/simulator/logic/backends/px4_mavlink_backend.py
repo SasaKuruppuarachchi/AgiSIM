@@ -713,6 +713,19 @@ class PX4MavlinkBackend(Backend):
             self._simulation_fault_handler(reason)
         raise RuntimeError(reason)
 
+    def send_mavlink(self, send) -> bool:
+        """Send an extra simulated-sensor message on the HIL link, e.g.
+        ``send_mavlink(lambda mav: mav.hil_optical_flow_send(...))``. Call from the physics step
+        (the same thread as update()). Returns False, sending nothing, until PX4 is connected."""
+        if self._connection is None or not self._received_first_hearbeat:
+            return False
+        try:
+            send(self._connection.mav)
+            return True
+        except Exception as error:
+            carb.log_warn("Could not send extra mavlink message: " + str(error))
+            return False
+
     def send_heartbeat(self, mav_type=mavutil.mavlink.MAV_TYPE_GENERIC):
         """
         Method that is used to publish an heartbear through mavlink protocol

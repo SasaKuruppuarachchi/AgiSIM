@@ -14,7 +14,7 @@ import yaml
 
 from agipix_splat_dataset import SplatDataset
 from agipix_splat_geometry import (
-    CV_FROM_GL, CX, CY, FOCAL_PX, HEIGHT, MOUNTS, WIDTH,
+    CV_FROM_GL, CX, CY, FOCAL_PX, HEIGHT, LANDING_GEAR_MOUNTS, MOUNTS, SETTING_H_MOUNTS, WIDTH,
     body_to_camera_cv, module_corners_cv, opencv_to_nerfstudio,
     project_equidistant, rendered_camera_to_opencv,
 )
@@ -28,7 +28,7 @@ class SplatGeometryTest(unittest.TestCase):
     def test_all_extrinsics_match_handover_yaml_including_downward_optical_axis(self):
         handover = Path(__file__).resolve().parents[1] / "assets/agipixv2_setting_H_handover/log_work/2026-10-17_agipixv2_setting_H_camera_mount_handover.md"
         calibration = yaml.safe_load(handover.read_text().split("```yaml\n")[1].split("```")[0])
-        for mount in MOUNTS:
+        for mount in SETTING_H_MOUNTS:
             with self.subTest(camera=mount.name):
                 transform = body_to_camera_cv(mount)
                 np.testing.assert_allclose(transform[:3, :3], calibration[mount.name]["R_body_cam"], atol=1e-6)
@@ -37,6 +37,17 @@ class SplatGeometryTest(unittest.TestCase):
                 self.assertLess(transform[2, 1], 0)  # Image down points down; sky at image top.
                 self.assertAlmostEqual(transform[2, 0], 0)  # Image right is horizontal.
                 self.assertAlmostEqual(np.linalg.det(transform[:3, :3]), 1)
+
+    def test_landing_gear_mounts_match_cad_poses_and_share_setting_h_rotations(self):
+        poses = Path(__file__).resolve().parents[1] / "assets/cad/camera_mounts/landing_gear_mounts/data/poses_LG_p10.json"
+        cad = json.loads(poses.read_text())
+        self.assertEqual(MOUNTS, LANDING_GEAR_MOUNTS)  # default set
+        for mount, setting_h in zip(LANDING_GEAR_MOUNTS, SETTING_H_MOUNTS):
+            with self.subTest(camera=mount.name):
+                np.testing.assert_allclose(np.asarray(mount.position) * 1000, cad[mount.name]["lens_centre_mm"], atol=1e-9)
+                self.assertEqual(mount.yaw_degrees, cad[mount.name]["yaw_deg"])
+                self.assertEqual(mount.pitch_degrees, cad[mount.name]["pitch_deg"])
+                np.testing.assert_allclose(body_to_camera_cv(mount)[:3, :3], body_to_camera_cv(setting_h)[:3, :3])
 
     def test_nerfstudio_and_opencv_project_the_same_world_point(self):
         world_body = np.array([[0, -1, 0, 3], [1, 0, 0, 4], [0, 0, 1, 2], [0, 0, 0, 1]], dtype=float)

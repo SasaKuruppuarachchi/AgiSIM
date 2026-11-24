@@ -7,6 +7,7 @@ All transforms use column vectors and metres.
 
 from dataclasses import dataclass
 import math
+import os
 
 import numpy as np
 
@@ -29,12 +30,35 @@ class CameraMount:
     pitch_degrees: float = -10.0  # Handover elevation: negative means DOWN.
 
 
-MOUNTS = (
+# Setting H handover (2026-10-17): lenses on the guard rings.
+SETTING_H_MOUNTS = (
     CameraMount("FL", (0.17, 0.18, 0.01157), 15.0),
     CameraMount("FR", (0.17, -0.18, 0.01157), -15.0),
     CameraMount("RL", (-0.17, 0.19, 0.01157), 110.0),
     CameraMount("RR", (-0.17, -0.19, 0.01157), -110.0),
 )
+
+# Candidate B (2026-11-19): printed clips on the landing-gear tops under the motors,
+# lens 30 mm ahead of the leg axis, Z -25.5 mm; same yaws/pitch as setting H.
+# Source: assets/cad/camera_mounts/landing_gear_mounts (data/poses_LG_p10.json).
+LANDING_GEAR_MOUNTS = (
+    CameraMount("FL", (0.12782, 0.13926, -0.0255), 15.0),
+    CameraMount("FR", (0.12782, -0.13926, -0.0255), -15.0),
+    CameraMount("RL", (-0.10910, 0.15969, -0.0255), 110.0),
+    CameraMount("RR", (-0.10910, -0.15969, -0.0255), -110.0),
+)
+
+MOUNT_SETS = {"landing_gear": LANDING_GEAR_MOUNTS, "setting_h": SETTING_H_MOUNTS}
+# AGIPIX_CAMERA_MOUNTS selects the set for every module that imports MOUNTS
+# (cameras, preview, dataset). Default: the landing-gear mounts.
+MOUNT_SET = os.environ.get("AGIPIX_CAMERA_MOUNTS", "landing_gear")
+if MOUNT_SET not in MOUNT_SETS:
+    raise ValueError(f"AGIPIX_CAMERA_MOUNTS={MOUNT_SET!r}; expected one of {sorted(MOUNT_SETS)}")
+MOUNTS = MOUNT_SETS[MOUNT_SET]
+# Camera near clip (sphere radius). With the real OV9782-W mesh attached, the lens barrel
+# face sits 0.6 mm ahead of the lens point (rho <= 4.55 mm); 4.7 mm keeps it out of view,
+# as in the 0.000 % occlusion check (landing_gear_mounts/verification/isaac_v3).
+NEAR_CLIP_M = 0.0047 if MOUNT_SET == "landing_gear" else 0.001
 
 
 def body_to_camera_cv(mount):

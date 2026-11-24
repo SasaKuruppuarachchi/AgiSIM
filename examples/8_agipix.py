@@ -90,7 +90,7 @@ class AgipixApp:
     def __init__(self, namespace="drone", vehicle_id=0, physics_dt=DEFAULT_PHYSICS_DT,
                  lidar_timestamps=False, environment="AKW_C", px4_dir=None,
                  gui=False, chase_cam=True, splat_mode=False, splat_depth=False, splat_out=None,
-                 save_splat=False, leds=False, livox_imu=False):
+                 save_splat=False, leds=False, livox_imu=False, record_video=None, flow=False):
         if not math.isfinite(physics_dt) or physics_dt <= 0:
             raise ValueError("physics_dt must be a finite, positive number of seconds")
         self.namespace = namespace
@@ -109,6 +109,9 @@ class AgipixApp:
             raise ValueError("save_splat, splat_depth and splat_out require splat_mode")
         if not save_splat and (splat_depth or splat_out is not None):
             raise ValueError("splat_depth and splat_out require save_splat")
+        if record_video is not None and not splat_mode:
+            raise ValueError("record_video requires splat_mode")
+        self._video = None
 
         self.timeline = omni.timeline.get_timeline_interface()
         self.assets_root_path = nucleus.get_assets_root_path()
@@ -131,6 +134,14 @@ class AgipixApp:
         self._render_scope = None
         self._livox_imu_enabled = livox_imu
         self._livox_imu = None
+        self._flow_enabled = flow
+        self._flow = None
+        self._px4_backend = None
+        if flow:
+            # PX4 reads PX4_PARAM_* at boot; export before the backend autolaunches PX4.
+            from agipix_flow import apply_px4_param_env
+
+            carb.log_info("ARK Flow MR PX4 params: " + str(apply_px4_param_env()))
 
         self._setup_world()
         self._spawn_vehicle()
@@ -140,11 +151,25 @@ class AgipixApp:
             add_navigation_lights(omni.usd.get_context().get_stage(), self.drone.prim_path + "/body")
         self._setup_publishers_and_sensors()
         if self.splat_mode:
-            from agipix_splat_camera import SplatRecorder
+            from agipix_splat_camera import SplatRecorder, add_camera_hardware
 
+            hardware = add_camera_hardware(self.stage, self.drone.prim_path + "/body")
+            if hardware:
+                carb.log_info("Camera hardware meshes: " + ", ".join(hardware))
+            if record_video is not None:
+                from agipix_chase_camera import settings_for_environment
+                from agipix_video import VideoRecorder
+
+                state = self.drone._state
+                self._video = VideoRecorder(
+                    self.stage, self.drone.prim_path, SimulationManager.get_simulation_time(),
+                    settings_for_environment(self.environment), record_video, self.environment,
+                    state_fn=lambda: (state.position, state.linear_velocity),
+                )
             self.node.enable_splat_preview()
             self._splat_recorder = SplatRecorder(
-                self._splat_cameras, self.node, self.environment, splat_out, splat_depth, save=save_splat
+                self._splat_cameras, self.node, self.environment, splat_out, splat_depth, save=save_splat,
+                video=self._video,
             )
         if self.gui and chase_cam:
             from agipix_chase_camera import ChaseCamera, settings_for_environment
@@ -200,8 +225,9 @@ class AgipixApp:
             }
         )
 
+        self._px4_backend = PX4MavlinkBackend(mavlink_config)
         config_multirotor.backends = [
-            PX4MavlinkBackend(mavlink_config),
+            self._px4_backend,
             ROS2Backend(
                 vehicle_id=self.id,
                 config={
@@ -308,6 +334,8 @@ class AgipixApp:
         self.create_imu_sensor()
         if self._livox_imu_enabled:
             self.create_livox_imu()
+        if self._flow_enabled:
+            self.create_flow_sensor()
 
         self.stage = omni.usd.get_context().get_stage()
         self.drone_prim = self.stage.GetPrimAtPath(self.drone._stage_prefix + "/body")
@@ -327,6 +355,60 @@ class AgipixApp:
         self.node.enable_livox_imu()
         self._livox_imu = LivoxImuEmulator(self.node.publish_livox_imu, self.lidar_ori, position, settings)
         carb.log_info("Livox IMU emulation at body " + str(position.round(4).tolist()))
+
+    def create_flow_sensor(self):
+        """Emulated ARK Flow MR (agipix_flow.py): PAA3905 flow + AFBR-S50 ToF from the vehicle state and
+        PhysX ray casts that skip the vehicle's own colliders, sent to PX4 on the HIL link as
+        HIL_OPTICAL_FLOW / DISTANCE_SENSOR. AGIPIX_FLOW_LOG=<prefix> writes GT/sensor CSVs."""
+        from omni.physx import get_physx_scene_query_interface
+        from agipix_flow import FlowRangeEmulator, settings_from_env
+
+        query = get_physx_scene_query_interface()
+        own = self.drone.prim_path + "/"
+
+        def raycast(origin, direction, max_distance):
+            origin = carb.Float3(*map(float, origin))
+            direction = carb.Float3(*map(float, direction))
+            hit = query.raycast_closest(origin, direction, float(max_distance), False)
+            if not hit or not hit.get("hit"):
+                return None
+            if not (hit.get("rigidBody", "").startswith(own) or hit.get("collision", "").startswith(own)):
+                return hit["distance"]
+            # The closest hit is this vehicle: walk all hits (slower, Python callback per hit).
+            counts = self._flow.counts
+            counts["ray_fallback"] = counts.get("ray_fallback", 0) + 1
+            best = [None]
+
+            def report(h):
+                if not (h.rigid_body.startswith(own) or h.collision.startswith(own)):
+                    if best[0] is None or h.distance < best[0]:
+                        best[0] = h.distance
+                return True
+
+            query.raycast_all(origin, direction, float(max_distance), report, False)
+            return best[0]
+
+        backend = self._px4_backend
+
+        def send_flow(m):
+            time_us = int(SimulationManager.get_simulation_time() * 1e6)
+            backend.send_mavlink(lambda mav: mav.hil_optical_flow_send(
+                time_us, 0, m["integration_time_us"], m["integrated_x"], m["integrated_y"],
+                m["integrated_xgyro"], m["integrated_ygyro"], m["integrated_zgyro"], 2500, m["quality"],
+                0, m["distance"]))
+
+        def send_range(m):
+            time_ms = int(SimulationManager.get_simulation_time() * 1e3) & 0xFFFFFFFF
+            backend.send_mavlink(lambda mav: mav.distance_sensor_send(
+                time_ms, m["min_distance"], m["max_distance"], m["current_distance"], 0, 0, 25,
+                m["covariance"], m["fov"], m["fov"], [0.0, 0.0, 0.0, 0.0], m["signal_quality"]))
+
+        settings = settings_from_env()
+        self._flow = FlowRangeEmulator(raycast, send_flow, send_range, settings,
+                                       log_path=os.environ.get("AGIPIX_FLOW_LOG") or None)
+        carb.log_warn("ARK Flow MR emulation on: flow at body " + str(settings.flow_position)
+                      + ", range at " + str(settings.range_position) + ", texture " + str(settings.texture)
+                      + ", featureless " + str(settings.featureless_boxes))
 
     def create_imu_sensor(self):
         self.isaac_imu = IMUSensor(
@@ -351,6 +433,12 @@ class AgipixApp:
             st = self.drone._state
             self._livox_imu.step(current_sim_time, Rotation.from_quat(st.attitude).as_matrix(),
                                  st.linear_velocity, st.angular_velocity, armed=spinning)
+        if self._flow is not None:
+            st = self.drone._state
+            started = time.perf_counter()
+            self._flow.step(current_sim_time, Rotation.from_quat(st.attitude).as_matrix(), st.position,
+                            st.linear_velocity, st.angular_velocity)
+            self._flow.cost_s += time.perf_counter() - started
 
         if self.physics_stp_cnt == 0:
             if self.sim_elapsed_time is None:
@@ -392,6 +480,8 @@ class AgipixApp:
                     sim_time = SimulationManager.get_simulation_time()
                     if self._chase_camera is not None:
                         self._chase_camera.update(self.drone._state.position, sim_time)
+                    if self._video is not None:
+                        self._video.update(self.drone._state.position, sim_time)
                     self.node.publish_timeline_state(self.timeline, sim_time)
             elif self._chase_camera is None:
                 # Preserve the headless loop: no camera import, prim or per-step work.
@@ -431,6 +521,15 @@ class AgipixApp:
                 self.drone.stop()
             except Exception as error:
                 cleanup_errors.append(error)
+            if self._flow is not None:
+                try:
+                    self._flow.close()
+                    steps = max(1, self._flow.steps)
+                    carb.log_warn("ARK Flow MR emulation: " + str(self._flow.counts) + " discarded "
+                                  + str(self._flow.discard_reasons) + ", mean cost per physics step "
+                                  + f"{1e6 * self._flow.cost_s / steps:.0f} us over {steps} steps")
+                except Exception as error:
+                    cleanup_errors.append(error)
             if self._cb_physics is not None:
                 try:
                     SimulationManager.deregister_callback(self._cb_physics)
@@ -455,11 +554,15 @@ def parse_cli_args():
                         help="Enable white front/red rear navigation lights on the guard corners (default: off).")
     parser.add_argument("--livox-imu", action="store_true",
                         help="Publish an emulated Livox Mid-360 IMU on /<ns>/livox/imu (200 Hz, lidar axes, g units; default: off).")
+    parser.add_argument("--flow", action="store_true",
+                        help="Emulate the ARK Flow MR (PAA3905 flow + AFBR-S50 ToF) into PX4 over the HIL link and "
+                             "export its EKF2/SENS_FLOW parameter set (agipix_flow.py; default: off).")
     parser.add_argument("--chase-cam", action=argparse.BooleanOptionalAction, default=True,
                         help="Follow travel direction in the GUI viewport (default: on; ignored headless). "
                              "Tune view/filter defaults in agipix_chase_camera.ChaseCameraSettings.")
     parser.add_argument("--splat-mode", action="store_true",
-                        help="Replace RealSense with four setting-H fisheyes and a stitched 10 Hz panorama preview.")
+                        help="Replace RealSense with the four OV9782-W fisheyes (AGIPIX_CAMERA_MOUNTS: landing_gear "
+                             "(default) or setting_h) and a stitched 10 Hz panorama preview.")
     parser.add_argument("--save-splat", action="store_true",
                         help="Write the full-resolution splat dataset to disk (default: off; requires --splat-mode).")
     parser.add_argument("--splat-depth", action="store_true",
@@ -467,6 +570,9 @@ def parse_cli_args():
     parser.add_argument("--splat-out", type=Path,
                         help="New dataset directory; requires --save-splat "
                              "(default: ~/agipix_splat/<environment>_<timestamp>).")
+    parser.add_argument("--record-video", type=Path, metavar="DIR",
+                        help="Record a 10 Hz chase-camera view plus the four onboard cameras into a new DIR "
+                             "(requires --splat-mode; compose with agipix_video_compose.py).")
     parser.add_argument("--environment", choices=tuple(FLAT_ENVIRONMENTS), default="AKW_C",
                         help="Installed environment to load (default: AKW_C).")
     parser.add_argument("--px4-dir", help="PX4 source/build directory (defaults to Pegasus configuration).")
@@ -495,6 +601,8 @@ def parse_cli_args():
         parser.error("--save-splat, --splat-depth and --splat-out require --splat-mode")
     if not args.save_splat and (args.splat_depth or args.splat_out is not None):
         parser.error("--splat-depth and --splat-out require --save-splat")
+    if args.record_video is not None and not args.splat_mode:
+        parser.error("--record-video requires --splat-mode")
     return args
 
 
@@ -507,6 +615,7 @@ def main():
             gui=not args.headless, chase_cam=args.chase_cam,
             splat_mode=args.splat_mode, splat_depth=args.splat_depth, splat_out=args.splat_out,
             save_splat=args.save_splat, leds=args.leds, livox_imu=args.livox_imu,
+            record_video=args.record_video, flow=args.flow,
         )
         app.run()
     finally:
